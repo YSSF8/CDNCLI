@@ -5,6 +5,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import fs from 'fs';
 import path from 'path';
+import * as prettier from 'prettier';
 import { logInfo, logSuccess, logWarning, logError, ProgressBar } from './logging';
 import { getInstalledLibraries, getFileScore } from './libraryUtil';
 import { highlightScriptTag } from './highlightCode';
@@ -394,5 +395,175 @@ program
         });
     });
 
+program
+    .command('insert <library-name>')
+    .argument('[filename]', 'Optional specific file to insert (e.g., jquery.min.js)')
+    .argument('<html-file>', 'HTML file to modify')
+    .argument('<location>', 'Location in HTML (head or body)')
+    .description('Inserts a script/link tag for a library file into an HTML file')
+    // Make the action async to use await with prettier.format
+    .action(async (libraryName: string, filename: string | undefined, htmlFile: string, location: string) => {
+        try {
+            // 1. Validate location
+            const targetLocation = location.toLowerCase();
+            if (targetLocation !== 'head' && targetLocation !== 'body') {
+                logError(`Invalid location "${location}". Must be 'head' or 'body'.`);
+                return;
+            }
+
+            // 2. Validate HTML file existence
+            if (!fs.existsSync(htmlFile)) {
+                logError(`HTML file not found: ${htmlFile}`);
+                return;
+            }
+            try {
+                fs.accessSync(htmlFile, fs.constants.R_OK | fs.constants.W_OK);
+            } catch (accessErr) {
+                logError(`Cannot read/write HTML file: ${htmlFile}. Check permissions.`);
+                return;
+            }
+
+            const cdnModulesDir = 'cdn_modules';
+            const libraryDir = path.join(cdnModulesDir, libraryName);
+            let actualLibraryName = libraryName;
+
+            if (!fs.existsSync(libraryDir) || !fs.statSync(libraryDir).isDirectory()) {
+                let found = false;
+                if (fs.existsSync(cdnModulesDir)) {
+                    const dirs = fs.readdirSync(cdnModulesDir, { withFileTypes: true })
+                        .filter(d => d.isDirectory())
+                        .map(d => d.name);
+                    const match = dirs.find(dir => dir.toLowerCase() === libraryName.toLowerCase());
+                    if (match) {
+                        actualLibraryName = match;
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    logError(`Library "${libraryName}" is not installed (directory not found in ${cdnModulesDir}).`);
+                    return;
+                }
+            }
+            const actualLibraryDir = path.join(cdnModulesDir, actualLibraryName);
+
+            let fileToInsert: string | null = null;
+            let filesInLib: string[];
+            try {
+                filesInLib = fs.readdirSync(actualLibraryDir).filter(file =>
+                    (file.endsWith('.js') || file.endsWith('.css')) && !file.endsWith('.map')
+                );
+            } catch (readErr) {
+                logError(`Error reading library directory ${actualLibraryDir}: ${(readErr as Error).message}`);
+                return;
+            }
+
+            if (filesInLib.length === 0) {
+                logError(`No suitable .js or .css files found in ${actualLibraryDir}.`);
+                return;
+            }
+
+            if (filename) {
+                const foundFile = filesInLib.find(f => f.toLowerCase() === filename.toLowerCase());
+                if (!foundFile) {
+                    logError(`Specified file "${filename}" not found in ${actualLibraryDir}.`);
+                    logInfo(`Available files: ${filesInLib.join(', ')}`);
+                    return;
+                }
+                fileToInsert = foundFile;
+                logInfo(`Using specified file: ${fileToInsert}`);
+            } else {
+                const rankedFiles = filesInLib
+                    .map(file => ({
+                        file,
+                        score: getFileScore(file, actualLibraryName),
+                    }))
+                    .sort((a, b) => b.score - a.score);
+
+                if (rankedFiles.length > 0) {
+                    fileToInsert = rankedFiles[0].file;
+                    logInfo(`No specific file requested, selecting best match: ${fileToInsert}`);
+                } else {
+                    logError(`Could not determine a best file to insert in ${actualLibraryDir}.`);
+                    return;
+                }
+            }
+
+            if (!fileToInsert) {
+                logError("Failed to determine file for insertion.");
+                return;
+            }
+
+            let tagToInsert: string;
+            const filePath = `/cdn_modules/${actualLibraryName}/${fileToInsert}`;
+            const fileExt = path.extname(fileToInsert).toLowerCase();
+
+            if (fileExt === '.css') {
+                tagToInsert = `<link rel="stylesheet" href="${filePath}">`;
+            } else if (fileExt === '.js') {
+                tagToInsert = `<script src="${filePath}" defer></script>`;
+            } else {
+                logError(`Unsupported file type for insertion: ${fileToInsert}`);
+                return;
+            }
+
+            logInfo(`Reading HTML file: ${htmlFile}`);
+            const htmlContent = fs.readFileSync(htmlFile, 'utf-8');
+            const $ = cheerio.load(htmlContent, {
+                // Try to preserve some whitespace characteristics if possible with cheerio options
+                // Note: Cheerio is not a full layout engine, perfect preservation isn't guaranteed.
+                // decodeEntities: false // Might help sometimes? Often not needed.
+            });
+
+            const targetElement = $(targetLocation);
+            if (targetElement.length === 0) {
+                logError(`Could not find <${targetLocation}> tag in ${htmlFile}. Ensure it's valid HTML.`);
+                return;
+            }
+
+            let tagExists = false;
+            const selector = fileExt === '.css' ? `link[href="${filePath}"]` : `script[src="${filePath}"]`;
+            if ($(targetLocation).find(selector).length > 0) {
+                tagExists = true;
+            }
+
+            if (tagExists) {
+                logWarning(`Tag for "${filePath}" already exists in <${targetLocation}> of ${htmlFile}. No changes made.`);
+                return;
+            }
+
+            logInfo(`Inserting tag into <${targetLocation}>...`);
+            targetElement.append(`\n    ${tagToInsert}\n`);
+
+            const rawHtmlOutput = $.html();
+            let finalHtmlOutput = rawHtmlOutput;
+
+            try {
+                logInfo('Formatting HTML output...');
+                finalHtmlOutput = await prettier.format(rawHtmlOutput, {
+                    parser: 'html',
+                });
+                if (!finalHtmlOutput.endsWith('\n')) {
+                    finalHtmlOutput += '\n';
+                }
+            } catch (formatError) {
+                logWarning(`Could not format HTML output using prettier: ${(formatError as Error).message}`);
+                logWarning('Writing unformatted HTML instead.');
+            }
+
+
+            logInfo(`Writing changes back to ${htmlFile}`);
+            fs.writeFileSync(htmlFile, finalHtmlOutput, 'utf-8');
+
+            logSuccess(`Successfully inserted tag for ${fileToInsert} into ${htmlFile}`);
+            console.log(highlightScriptTag(`Inserted: ${tagToInsert}`));
+
+
+        } catch (error: any) {
+            logError(`Failed to insert tag: ${error.message}`);
+            if (error.stack) {
+                console.error(error.stack);
+            }
+        }
+    });
 
 program.parse(process.argv);
