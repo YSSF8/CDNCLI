@@ -2,3 +2,5 @@
 cdn_modules/
 
 node_modules/
+
+dist/
