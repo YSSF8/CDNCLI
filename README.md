@@ -90,10 +90,28 @@ cdn script-tag <library-name>
 cdn script-tag jquery
 ```
 
+#### Insert Script/Link Tags
+Inserts a script or link tag for an installed library into an HTML file.
+
+```bash
+cdn insert <library-name> [filename] <html-file> <location>
+```
+
+**Arguments**:
+- `library-name`: Name of the installed library
+- `filename`: Specific file to insert (e.g., jquery.min.js)
+- `html-file`: Path to the HTML file to modify
+- `location`: Where to insert the tag (`head` or `body`)
+
+**Example**:
+```bash
+cdn insert jquery jquery.js index.html head
+```
+
 ## Directory Structure
 
 - `cdn_modules/`: Directory where libraries are installed.
-- `root/`: Source code for the CLI.
+- `src/`: Source code for the CLI.
   - `index.ts`: Main entry point for the CLI.
   - `logging.ts`: Utility functions for logging and progress bars.
   - `libraryUtil.ts`: Functions for managing installed libraries.
@@ -116,7 +134,7 @@ npx tsc
 Run the CLI locally without linking:
 
 ```bash
-node out/index.js <command>
+node dist/index.js <command>
 ```
 
 ### Testing
