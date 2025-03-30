@@ -8,7 +8,7 @@ import path from 'path';
  * @throws {Error} Throws an error if the directory cannot be scanned.
  */
 async function getInstalledLibrariesAsync(): Promise<string[]> {
-    const directoryPath = path.resolve(__dirname, '..', 'cdn_modules');
+    const directoryPath = path.resolve(process.cwd(), 'cdn_modules');
 
     try {
         const dirents = await fs.readdir(directoryPath, { withFileTypes: true });
