@@ -21,6 +21,7 @@ program
     .option('--select-only <files>', 'Comma-separated list of specific files to install')
     .option('--verbose', 'Show detailed logging')
     .action(async (name: string, options: { selectOnly?: string; verbose?: boolean }) => {
+        const commandStartTime = Date.now();
         let progressBarActive = false;
         let progressBar: ProgressBar | null = null;
 
@@ -93,14 +94,12 @@ program
             });
 
             for (const url of prioritizedUrls) {
-
                 const urlParts = url.split('/');
                 const fileNameIndex = urlParts.length - 1;
                 const versionIndex = fileNameIndex - 1;
                 const libraryNameIndex = versionIndex - 1;
 
                 if (fileNameIndex < 0 || versionIndex < 0 || libraryNameIndex < 3 || urlParts[libraryNameIndex] === 'libs') {
-
                     if (options.verbose && progressBar) progressBar.clear();
                     logWarning(`Could not parse library name/version/filename from URL: ${url}. Skipping.`);
 
@@ -112,12 +111,9 @@ program
                 const fileName = urlParts[fileNameIndex];
 
                 if (options.verbose) {
-
                     if (progressBar) progressBar.clear();
                     logInfo(`Downloading ${fileName}...`);
-
                 }
-
 
                 try {
                     const linkResponse = await axios.get(url, { responseType: 'arraybuffer' });
@@ -145,50 +141,42 @@ program
                     fs.writeFileSync(filePath, linkData);
 
                     if (options.verbose) {
-
                         if (progressBar) progressBar.clear();
                         logSuccess(`Downloaded and saved: ${filePath}`);
                     }
 
                     downloadedFiles++;
                 } catch (error: any) {
-
                     if (progressBarActive && progressBar) progressBar.clear();
                     logError(`Failed to fetch or save ${fileName} from ${url}: ${error.message}`);
-
                 } finally {
-
-
                     if (progressBar) {
                         progressBar.update(downloadedFiles);
                     }
                 }
             }
 
-
             if (progressBar) {
-
-
-
                 progressBar.update(downloadedFiles);
                 progressBar.complete();
                 progressBarActive = false;
             }
 
-            if (downloadedFiles > 0) {
+            const commandEndTime = Date.now();
+            const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
 
+            if (downloadedFiles > 0) {
                 if (downloadedFiles === filteredUrls.length) {
-                    logSuccess(`Successfully installed all ${downloadedFiles} files for library: ${name}`);
+                    logSuccess(`Successfully installed all ${downloadedFiles} files for library: ${name} in ${durationSeconds}s`);
                 } else {
-                    logSuccess(`Successfully installed ${downloadedFiles} out of ${filteredUrls.length} files for library: ${name}`);
+                    logSuccess(`Successfully installed ${downloadedFiles} out of ${filteredUrls.length} files for library: ${name} in ${durationSeconds}s`);
                 }
             } else if (filteredUrls.length > 0) {
                 logError(`No files were successfully downloaded for library: ${name}. Check previous errors.`);
             }
-
-
         } catch (error: any) {
-
+            const commandEndTime = Date.now();
+            const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
 
             if (progressBarActive && progressBar) {
                 progressBar.clear();
@@ -196,9 +184,9 @@ program
             }
 
             if (axios.isAxiosError(error) && error.response?.status === 404) {
-                logError(`Could not find library "${name}" on cdnjs (404).`);
+                logError(`Could not find library "${name}" on cdnjs (404). Failed in ${durationSeconds}s`);
             } else {
-                logError(`Installation failed: ${error.message}`);
+                logError(`Installation failed: ${error.message}. Operation took ${durationSeconds}s`);
             }
         }
     });
@@ -206,10 +194,11 @@ program
 
 program
     .command('uninstall <name>')
-
     .action((name: string) => {
+        const commandStartTime = Date.now();
         try {
             const cdnModulesDir = path.join('cdn_modules');
+            let uninstalledCount = 0;
 
             if (name === '/') {
                 if (!fs.existsSync(cdnModulesDir)) {
@@ -223,8 +212,9 @@ program
 
                 if (libraries.length === 0) {
                     logInfo('No libraries found within cdn_modules directory.');
-
-
+                    const commandEndTime = Date.now();
+                    const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
+                    logInfo(`Uninstall check finished in ${durationSeconds}s`);
                     return;
                 }
 
@@ -234,6 +224,7 @@ program
                     try {
                         fs.rmSync(libraryDir, { recursive: true, force: true });
                         logSuccess(`Successfully uninstalled library: ${library}`);
+                        uninstalledCount++;
                     } catch (rmError: any) {
                         logError(`Failed to remove directory for ${library}: ${rmError.message}`)
                     }
@@ -248,7 +239,9 @@ program
                     }
                 }
 
-                logSuccess('All libraries have been uninstalled.');
+                const commandEndTime = Date.now();
+                const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
+                logSuccess(`Finished uninstalling ${uninstalledCount} libraries in ${durationSeconds}s`); 
             } else {
                 const libraryDir = path.join(cdnModulesDir, name);
 
@@ -263,7 +256,10 @@ program
                 }
 
                 fs.rmSync(libraryDir, { recursive: true, force: true });
-                logSuccess(`Successfully uninstalled library: ${name}`);
+
+                const commandEndTime = Date.now();
+                const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
+                logSuccess(`Successfully uninstalled library: ${name} in ${durationSeconds}s`);
 
                 if (fs.existsSync(cdnModulesDir) && fs.readdirSync(cdnModulesDir).length === 0) {
                     try {
@@ -275,18 +271,18 @@ program
                 }
             }
         } catch (error: any) {
-            logError(`Failed to uninstall library "${name}": ${error.message}`);
+            const commandEndTime = Date.now();
+            const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
+            logError(`Failed to uninstall library "${name}": ${error.message}. Operation took ${durationSeconds}s`);
         }
     });
 
 program
     .command('list')
-
     .description('Lists all installed libraries found in cdn_modules')
     .action(() => {
         getInstalledLibraries((err, folders) => {
             if (err) {
-
                 if ((err as any).code === 'ENOENT') {
                     logInfo('No libraries installed (cdn_modules directory not found).');
                 } else {
@@ -306,8 +302,7 @@ program
     });
 
 program
-    .command('script-tag <name>')
-
+    .command('embed <name>')
     .description('Generates prioritized script tags for an installed library')
     .action((name: string) => {
         getInstalledLibraries((err, folders) => {
@@ -329,14 +324,12 @@ program
             let files: string[];
             try {
                 files = fs.readdirSync(libraryDir).filter(file => {
-
                     return file.endsWith('.js') || file.endsWith('.css');
                 });
             } catch (readErr: any) {
                 logError(`Error reading files for library "${name}" in ${libraryDir}: ${readErr.message}`);
                 return;
             }
-
 
             if (files.length === 0) {
                 logWarning(`No script/style files (.js, .css) found in library "${name}".`);
@@ -401,17 +394,14 @@ program
     .argument('<html-file>', 'HTML file to modify')
     .argument('<location>', 'Location in HTML (head or body)')
     .description('Inserts a script/link tag for a library file into an HTML file')
-    // Make the action async to use await with prettier.format
     .action(async (libraryName: string, filename: string | undefined, htmlFile: string, location: string) => {
         try {
-            // 1. Validate location
             const targetLocation = location.toLowerCase();
             if (targetLocation !== 'head' && targetLocation !== 'body') {
                 logError(`Invalid location "${location}". Must be 'head' or 'body'.`);
                 return;
             }
 
-            // 2. Validate HTML file existence
             if (!fs.existsSync(htmlFile)) {
                 logError(`HTML file not found: ${htmlFile}`);
                 return;

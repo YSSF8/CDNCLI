@@ -36,6 +36,24 @@ function isTTY(stream: Writable): boolean {
     return Boolean(stream && typeof stream === 'object' && (stream as any).isTTY);
 }
 
+/**
+ * Formats seconds into a more readable string.
+ * @param totalSeconds The total number of seconds.
+ * @returns A formatted duration string.
+ */
+function formatDuration(totalSeconds: number): string {
+    if (totalSeconds < 0 || !isFinite(totalSeconds)) {
+        return '--s';
+    }
+    const seconds = Math.floor(totalSeconds % 60);
+    const minutes = Math.floor(totalSeconds / 60);
+
+    if (minutes > 0) {
+        return `${minutes}m ${seconds}s`;
+    } else {
+        return `${seconds}s`;
+    }
+}
 
 /**
  * Clears the current line in the terminal, if the stream is a TTY.
@@ -90,14 +108,16 @@ export class ProgressBar {
     private isComplete: boolean;
     private stream: Writable;
     private readonly streamIsTTY: boolean;
+    private startTime: number;
 
-    constructor(total: number, barLength: number = 50, stream: Writable = process.stdout) {
+    constructor(total: number, barLength: number = 40, stream: Writable = process.stdout) {
         this.total = total;
         this.current = 0;
         this.barLength = barLength;
         this.isComplete = false;
         this.stream = stream;
         this.streamIsTTY = isTTY(this.stream);
+        this.startTime = Date.now();
     }
 
     /**
@@ -107,11 +127,13 @@ export class ProgressBar {
     update(value: number): void {
         if (this.isComplete) return;
 
-        this.current = Math.min(value, this.total);
+        this.current = Math.min(Math.max(0, value), this.total);
+
         this.draw();
 
         if (this.current >= this.total) {
-            this.complete();
+            // Don't call complete automatically here, let the caller decide
+            // when the *overall* process is done. Draw the 100% state though.
         }
     }
 
@@ -119,23 +141,38 @@ export class ProgressBar {
      * Draws the progress bar to the console.
      */
     private draw(): void {
-        if (!this.streamIsTTY) return;
+        if (!this.streamIsTTY || this.total <= 0) return;
 
-        const progress = Math.min(this.current / this.total, 1);
+        const progress = this.total === 0 ? 1 : Math.min(this.current / this.total, 1);
         const filledBarLength = Math.round(progress * this.barLength);
         const emptyBarLength = this.barLength - filledBarLength;
 
         const filledBar = "█".repeat(filledBarLength);
         const emptyBar = "░".repeat(emptyBarLength);
+        const percentage = Math.round(progress * 100);
 
-        const output = `${Colors.FgCyan}[${filledBar}${emptyBar}] ${Math.round(progress * 100)}%${Colors.Reset}`;
+        let etaString = 'ETA: --s';
+        const elapsedMs = Date.now() - this.startTime;
+        if (this.current > 0 && elapsedMs > 500 && this.current < this.total) {
+            const msPerItem = elapsedMs / this.current;
+            const remainingItems = this.total - this.current;
+            const etaMs = msPerItem * remainingItems;
+            etaString = `ETA: ${formatDuration(etaMs / 1000)}`;
+        } else if (this.current === 0 && elapsedMs > 500) {
+            etaString = 'ETA: ...';
+        } else if (this.current >= this.total) {
+            etaString = `Done ${formatDuration(elapsedMs / 1000)}`;
+        }
+
+        const output = `${Colors.FgCyan}[${filledBar}${emptyBar}] ${percentage}% (${this.current}/${this.total}) ${etaString}${Colors.Reset}`;
 
         clearLine(this.stream);
         this.stream.write(output + '\r');
     }
 
     /**
-     * Completes the progress bar.
+     * Marks the progress bar as complete and clears the line for final output.
+     * Often called after the loop finishes.
      */
     complete(): void {
         if (this.isComplete || !this.streamIsTTY) return;
@@ -148,10 +185,10 @@ export class ProgressBar {
     }
 
     /**
-     * Clears the progress bar line, useful before printing other output.
+     * Clears the progress bar line, useful before printing other output during progress.
      */
     clear(): void {
-        if (this.streamIsTTY) {
+        if (this.streamIsTTY && !this.isComplete) {
             clearLine(this.stream);
         }
     }
