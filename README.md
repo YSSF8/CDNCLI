@@ -82,12 +82,12 @@ cdn list
 Generates prioritized `<script>` or `<link>` tags for an installed library.
 
 ```bash
-cdn script-tag <library-name>
+cdn embed <library-name>
 ```
 
 **Example**:
 ```bash
-cdn script-tag jquery
+cdn embed jquery
 ```
 
 #### Insert Script/Link Tags
