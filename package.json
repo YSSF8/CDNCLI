@@ -17,6 +17,7 @@
     "axios": "^1.7.9",
     "cheerio": "^1.0.0",
     "commander": "^13.0.0",
+    "p-limit": "^6.2.0",
     "prettier": "^3.5.3"
   },
   "devDependencies": {
