@@ -13,7 +13,7 @@ CDNCLI is a command-line interface (CLI) tool for managing libraries from CDNs. 
 
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/YSSF8/CDNCLI.git
    cd CDNCLI
    ```
 
