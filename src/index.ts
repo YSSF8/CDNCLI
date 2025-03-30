@@ -17,6 +17,7 @@ program
 
 program
     .command('install <name>')
+    .alias('i')
     .description('Installs a library locally')
     .option('--select-only <files>', 'Comma-separated list of specific files to install')
     .option('--verbose', 'Show detailed logging')
@@ -146,9 +147,9 @@ program
                     }
 
                     downloadedFiles++;
-                } catch (error: any) {
+                } catch (error) {
                     if (progressBarActive && progressBar) progressBar.clear();
-                    logError(`Failed to fetch or save ${fileName} from ${url}: ${error.message}`);
+                    logError(`Failed to fetch or save ${fileName} from ${url}: ${(error as Error).message}`);
                 } finally {
                     if (progressBar) {
                         progressBar.update(downloadedFiles);
@@ -174,7 +175,7 @@ program
             } else if (filteredUrls.length > 0) {
                 logError(`No files were successfully downloaded for library: ${name}. Check previous errors.`);
             }
-        } catch (error: any) {
+        } catch (error) {
             const commandEndTime = Date.now();
             const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
 
@@ -186,7 +187,7 @@ program
             if (axios.isAxiosError(error) && error.response?.status === 404) {
                 logError(`Could not find library "${name}" on cdnjs (404). Failed in ${durationSeconds}s`);
             } else {
-                logError(`Installation failed: ${error.message}. Operation took ${durationSeconds}s`);
+                logError(`Installation failed: ${(error as Error).message}. Operation took ${durationSeconds}s`);
             }
         }
     });
@@ -194,6 +195,7 @@ program
 
 program
     .command('uninstall <name>')
+    .alias('un')
     .action((name: string) => {
         const commandStartTime = Date.now();
         try {
@@ -225,8 +227,8 @@ program
                         fs.rmSync(libraryDir, { recursive: true, force: true });
                         logSuccess(`Successfully uninstalled library: ${library}`);
                         uninstalledCount++;
-                    } catch (rmError: any) {
-                        logError(`Failed to remove directory for ${library}: ${rmError.message}`)
+                    } catch (rmError) {
+                        logError(`Failed to remove directory for ${library}: ${(rmError as Error).message}`)
                     }
                 });
 
@@ -234,8 +236,8 @@ program
                     try {
                         fs.rmdirSync(cdnModulesDir);
                         logInfo(`Removed empty cdn_modules directory.`);
-                    } catch (rmdirError: any) {
-                        logWarning(`Could not remove cdn_modules directory: ${rmdirError.message}`);
+                    } catch (rmdirError) {
+                        logWarning(`Could not remove cdn_modules directory: ${(rmdirError as Error).message}`);
                     }
                 }
 
@@ -265,15 +267,15 @@ program
                     try {
                         fs.rmdirSync(cdnModulesDir);
                         logInfo(`Removed empty cdn_modules directory.`);
-                    } catch (rmdirError: any) {
-                        logWarning(`Could not remove cdn_modules directory: ${rmdirError.message}`);
+                    } catch (rmdirError) {
+                        logWarning(`Could not remove cdn_modules directory: ${(rmdirError as Error).message}`);
                     }
                 }
             }
-        } catch (error: any) {
+        } catch (error) {
             const commandEndTime = Date.now();
             const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
-            logError(`Failed to uninstall library "${name}": ${error.message}. Operation took ${durationSeconds}s`);
+            logError(`Failed to uninstall library "${name}": ${(error as Error).message}. Operation took ${durationSeconds}s`);
         }
     });
 
