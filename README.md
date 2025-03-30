@@ -42,7 +42,7 @@ Once installed, you can use the `cdn` command to interact with the CLI.
 Installs a library locally in the `cdn_modules` directory.
 
 ```bash
-cdn install <library-name> [options]
+cdn install|i <library-name> [options]
 ```
 
 **Options**:
@@ -58,7 +58,7 @@ cdn install jquery --select-only jquery.min.js --verbose
 Uninstalls a specific library or all libraries.
 
 ```bash
-cdn uninstall <library-name>
+cdn uninstall|un <library-name>
 ```
 
 **Example**:
