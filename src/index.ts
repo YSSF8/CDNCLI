@@ -8,7 +8,7 @@ import path from 'path';
 import * as prettier from 'prettier';
 import { logInfo, logSuccess, logWarning, logError, ProgressBar } from './logging';
 import { getInstalledLibraries, getFileScore } from './libraryUtil';
-import { highlightScriptTag } from './highlightCode';
+import { highlightHtmlTags } from './highlightCode';
 
 program
     .name('cdn')
@@ -362,7 +362,7 @@ program
                     tag = `<script src="${filePath}" defer></script>`;
                 }
 
-                console.log(highlightScriptTag(tag));
+                console.log(highlightHtmlTags(tag, ['link', 'script']));
             });
 
             const Colors = {
@@ -555,7 +555,7 @@ program
             fs.writeFileSync(htmlFile, finalHtmlOutput, 'utf-8');
 
             logSuccess(`Successfully inserted tag for ${fileToInsert} into ${htmlFile}`);
-            console.log(highlightScriptTag(`Inserted: ${tagToInsert}`));
+            console.log(highlightHtmlTags(`Inserted: ${tagToInsert}`, ['link', 'script']));
 
 
         } catch (error: any) {
