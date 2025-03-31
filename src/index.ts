@@ -6,10 +6,10 @@ import * as cheerio from 'cheerio';
 import fs from 'fs';
 import path from 'path';
 import * as prettier from 'prettier';
-import pLimit from 'p-limit';
 import { logInfo, logSuccess, logWarning, logError, ProgressBar } from './logging';
 import { getInstalledLibraries, getFileScore } from './libraryUtil';
 import { highlightHtmlTags } from './highlightCode';
+import { createLimiter } from './limiter';
 
 program
     .name('cdn')
@@ -33,7 +33,7 @@ program
             logInfo(`Using concurrency level: ${concurrency}`);
         }
 
-        const limit = pLimit(concurrency);
+        const limit = createLimiter(concurrency);
 
         try {
             if (options.verbose) {
