@@ -217,32 +217,28 @@ program
     });
 
 program
-    .command('uninstall <name>')
+    .command('uninstall [names...]')
     .alias('un')
-    .action((name: string) => {
+    .description('Uninstalls one or more specified libraries, or all libraries if "/" is the only argument')
+    .action((names: string[]) => {
         const commandStartTime = Date.now();
-        try {
-            const cdnModulesDir = path.join('cdn_modules');
-            let uninstalledCount = 0;
+        let uninstalledCount = 0;
+        let failedCount = 0;
+        const cdnModulesDir = path.join('cdn_modules');
 
-            if (name === '/') {
-                if (!fs.existsSync(cdnModulesDir)) {
-                    logError('No libraries are installed (cdn_modules directory not found).');
-                    return;
-                }
+        if (!fs.existsSync(cdnModulesDir)) {
+            logError('No libraries are installed (cdn_modules directory not found).');
+            return;
+        }
 
-                const libraries = fs.readdirSync(cdnModulesDir, { withFileTypes: true })
-                    .filter(dirent => dirent.isDirectory())
-                    .map(dirent => dirent.name);
+        if (names.length === 1 && names[0] === '/') {
+            const libraries = fs.readdirSync(cdnModulesDir, { withFileTypes: true })
+                .filter(dirent => dirent.isDirectory())
+                .map(dirent => dirent.name);
 
-                if (libraries.length === 0) {
-                    logInfo('No libraries found within cdn_modules directory.');
-                    const commandEndTime = Date.now();
-                    const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
-                    logInfo(`Uninstall check finished in ${durationSeconds}s`);
-                    return;
-                }
-
+            if (libraries.length === 0) {
+                logInfo('No libraries found within cdn_modules directory to uninstall.');
+            } else {
                 logInfo(`Uninstalling all ${libraries.length} libraries...`);
                 libraries.forEach(library => {
                     const libraryDir = path.join(cdnModulesDir, library);
@@ -251,54 +247,88 @@ program
                         logSuccess(`Successfully uninstalled library: ${library}`);
                         uninstalledCount++;
                     } catch (rmError) {
-                        logError(`Failed to remove directory for ${library}: ${(rmError as Error).message}`)
+                        logError(`Failed to remove directory for ${library}: ${(rmError as Error).message}`);
+                        failedCount++;
                     }
                 });
+            }
+        } else if (names.length > 0) {
+            logInfo(`Attempting to uninstall ${names.length} specified libraries: ${names.join(', ')}`);
 
-                if (fs.readdirSync(cdnModulesDir).length === 0) {
-                    try {
-                        fs.rmdirSync(cdnModulesDir);
-                        logInfo(`Removed empty cdn_modules directory.`);
-                    } catch (rmdirError) {
-                        logWarning(`Could not remove cdn_modules directory: ${(rmdirError as Error).message}`);
+            const allInstalled = fs.readdirSync(cdnModulesDir, { withFileTypes: true })
+                .filter(dirent => dirent.isDirectory())
+                .map(dirent => dirent.name);
+            const installedLookup = new Map(allInstalled.map(name => [name.toLowerCase(), name]));
+
+            names.forEach(name => {
+                if (name === '/') {
+                    logWarning(`Ignoring '/' argument when specific library names are provided.`);
+                    return;
+                }
+
+                let actualLibraryName = installedLookup.get(name.toLowerCase());
+                let libraryDir: string | null = null;
+
+                if (actualLibraryName) {
+                    libraryDir = path.join(cdnModulesDir, actualLibraryName);
+                } else {
+                    const exactPath = path.join(cdnModulesDir, name);
+                    if (fs.existsSync(exactPath) && fs.statSync(exactPath).isDirectory()) {
+                        libraryDir = exactPath;
+                        actualLibraryName = name;
                     }
                 }
 
-                const commandEndTime = Date.now();
-                const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
-                logSuccess(`Finished uninstalling ${uninstalledCount} libraries in ${durationSeconds}s`);
-            } else {
-                const libraryDir = path.join(cdnModulesDir, name);
 
-                if (!fs.existsSync(libraryDir)) {
-                    logError(`Library "${name}" is not installed (directory not found).`);
+                if (!libraryDir || !actualLibraryName) {
+                    logWarning(`Library "${name}" is not installed or not found. Skipping.`);
+                    failedCount++;
                     return;
                 }
 
                 if (!fs.statSync(libraryDir).isDirectory()) {
-                    logError(`Path "${libraryDir}" exists but is not a directory. Cannot uninstall.`);
+                    logError(`Path for "${actualLibraryName}" exists but is not a directory (${libraryDir}). Cannot uninstall.`);
+                    failedCount++;
                     return;
                 }
 
-                fs.rmSync(libraryDir, { recursive: true, force: true });
-
-                const commandEndTime = Date.now();
-                const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
-                logSuccess(`Successfully uninstalled library: ${name} in ${durationSeconds}s`);
-
-                if (fs.existsSync(cdnModulesDir) && fs.readdirSync(cdnModulesDir).length === 0) {
-                    try {
-                        fs.rmdirSync(cdnModulesDir);
-                        logInfo(`Removed empty cdn_modules directory.`);
-                    } catch (rmdirError) {
-                        logWarning(`Could not remove cdn_modules directory: ${(rmdirError as Error).message}`);
-                    }
+                try {
+                    fs.rmSync(libraryDir, { recursive: true, force: true });
+                    logSuccess(`Successfully uninstalled library: ${actualLibraryName}`);
+                    uninstalledCount++;
+                } catch (error) {
+                    logError(`Failed to uninstall library "${actualLibraryName}": ${(error as Error).message}`);
+                    failedCount++;
                 }
+            });
+        } else {
+            logError('No library names specified for uninstallation.');
+            program.outputHelp();
+            return;
+        }
+
+        if (fs.existsSync(cdnModulesDir) && fs.readdirSync(cdnModulesDir).length === 0) {
+            try {
+                fs.rmdirSync(cdnModulesDir);
+                logInfo(`Removed empty cdn_modules directory.`);
+            } catch (rmdirError) {
+                logWarning(`Could not remove cdn_modules directory: ${(rmdirError as Error).message}`);
             }
-        } catch (error) {
-            const commandEndTime = Date.now();
-            const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
-            logError(`Failed to uninstall library "${name}": ${(error as Error).message}. Operation took ${durationSeconds}s`);
+        }
+
+        const commandEndTime = Date.now();
+        const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
+
+        if (uninstalledCount > 0 && failedCount === 0) {
+            logSuccess(`Finished uninstalling ${uninstalledCount} libraries in ${durationSeconds}s.`);
+        } else if (uninstalledCount > 0 && failedCount > 0) {
+            logWarning(`Completed uninstall process in ${durationSeconds}s. Successfully uninstalled ${uninstalledCount} libraries, but failed to uninstall ${failedCount} (see errors above).`);
+        } else if (uninstalledCount === 0 && failedCount > 0) {
+            logError(`Uninstall process completed in ${durationSeconds}s, but failed to uninstall ${failedCount} requested libraries (see errors above).`);
+        } else if (uninstalledCount === 0 && failedCount === 0 && !(names.length === 1 && names[0] === '/')) {
+            logInfo(`No matching installed libraries found for the names provided. Operation took ${durationSeconds}s.`);
+        } else if (names.length === 1 && names[0] === '/') {
+            logInfo(`Uninstall process finished in ${durationSeconds}s. No libraries were present to uninstall.`);
         }
     });
 
