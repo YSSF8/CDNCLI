@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import _fs from 'fs';
 import path from 'path';
 import { logWarning } from './logging';
+import axios, { AxiosError } from 'axios';
 
 /**
  * Scans the `cdn_modules` directory asynchronously and retrieves a list of installed libraries (directories).
@@ -105,4 +106,77 @@ export function findFilesRecursive(
         logWarning(`Could not read directory ${dirPath}: ${error.message}`);
     }
     return arrayOfFiles;
+}
+
+export async function downloadWithRetry(
+    url: string,
+    filePath: string,
+    options: { verbose?: boolean },
+    maxRetries: number = 2,
+    initialDelay: number = 1500
+): Promise<{ status: 'fulfilled'; path: string; url: string }> {
+    let attempts = 0;
+    let delay = initialDelay;
+
+    while (attempts <= maxRetries) {
+        try {
+            const linkResponse = await axios.get(url, {
+                responseType: 'arraybuffer',
+                timeout: 60000,
+            });
+            const linkData = linkResponse.data;
+            await fs.writeFile(filePath, linkData);
+            return { status: 'fulfilled', path: filePath, url: url };
+        } catch (error) {
+            attempts++;
+            const isRetryable = (err: unknown): boolean => {
+                if (axios.isAxiosError(err)) {
+                    return (
+                        err.code === 'ETIMEDOUT' ||
+                        err.code === 'ECONNABORTED' ||
+                        err.code === 'ECONNRESET' ||
+                        (err.response?.status !== undefined && err.response.status >= 500)
+                    );
+                }
+                if (error instanceof Error && typeof (error as any).code === 'string') {
+                    const code = (error as any).code;
+                    return code === 'ETIMEDOUT' || code === 'ECONNRESET' || code === 'EPIPE';
+                }
+                return false;
+            };
+
+            if (isRetryable(error) && attempts <= maxRetries) {
+                 const errorCode = axios.isAxiosError(error) ? error.code : (error as any)?.code || 'UNKNOWN';
+                if (options.verbose) {
+                    logWarning(`[Retry ${attempts}/${maxRetries}] Failed to download ${path.basename(filePath)} (${errorCode}). Retrying in ${delay / 1000}s...`);
+                }
+                await new Promise(resolve => setTimeout(resolve, delay));
+                delay *= 2;
+            } else {
+                 let errorMessage = `Failed task for ${path.basename(filePath)} saving to ${filePath} from ${url}`;
+                 if (axios.isAxiosError(error)) {
+                    errorMessage += `: AxiosError: ${error.code || 'N/A'}`;
+                    if (error.response) {
+                        errorMessage += ` - Status: ${error.response.status} ${error.response.statusText}`;
+                    } else if (error.request) {
+                         errorMessage += ` - No response received (Code: ${error.code})`;
+                    } else {
+                        errorMessage += ` - ${error.message}`;
+                    }
+                 } else if (error instanceof Error) {
+                    if ('code' in error && typeof error.code === 'string') {
+                        errorMessage += `: ${error.code} - ${(error as NodeJS.ErrnoException).message}`;
+                    } else {
+                        errorMessage += `: ${(error as Error).message}`;
+                    }
+                 } else {
+                     errorMessage += `: Unknown error occurred.`;
+                 }
+                if(attempts > 1) errorMessage += ` (failed after ${attempts - 1} retries)`;
+
+                 throw new Error(errorMessage);
+            }
+        }
+    }
+    throw new Error(`Download failed for ${url} after ${maxRetries} retries.`);
 }
