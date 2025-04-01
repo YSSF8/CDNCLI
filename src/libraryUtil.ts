@@ -1,5 +1,7 @@
 import { promises as fs } from 'fs';
+import _fs from 'fs';
 import path from 'path';
+import { logWarning } from './logging';
 
 /**
  * Scans the `cdn_modules` directory asynchronously and retrieves a list of installed libraries (directories).
@@ -79,4 +81,28 @@ export function getFileScore(fileName: string, libraryName: string): number {
     }
 
     return score;
+}
+
+export function findFilesRecursive(
+    dirPath: string,
+    baseDir: string,
+    fileFilter: (filePath: string) => boolean,
+    arrayOfFiles: string[] = []): string[] {
+    try {
+        const files = _fs.readdirSync(dirPath, { withFileTypes: true });
+
+        files.forEach(file => {
+            const fullPath = path.join(dirPath, file.name);
+            const relativePath = path.relative(baseDir, fullPath);
+
+            if (file.isDirectory()) {
+                findFilesRecursive(fullPath, baseDir, fileFilter, arrayOfFiles);
+            } else if (file.isFile() && fileFilter(relativePath)) {
+                arrayOfFiles.push(relativePath.split(path.sep).join('/'));
+            }
+        });
+    } catch (error: any) {
+        logWarning(`Could not read directory ${dirPath}: ${error.message}`);
+    }
+    return arrayOfFiles;
 }
