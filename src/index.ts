@@ -19,7 +19,7 @@ program
 program
     .command('install <name>')
     .alias('i')
-    .description('Installs a library locally')
+    .description('Installs a library locally into cdn_modules/<name>')
     .option('--select-only <files>', 'Comma-separated list of specific files to install')
     .option('--verbose', 'Show detailed logging')
     .option('--concurrency <number>', 'Maximum number of concurrent downloads', (value) => parseInt(value, 10), 10)
@@ -35,6 +35,9 @@ program
 
         const limit = createLimiter(concurrency);
 
+        const cdnModulesDir = 'cdn_modules';
+        const libraryBaseDir = path.join(cdnModulesDir, name);
+
         try {
             if (options.verbose) {
                 logInfo(`Starting installation of library: ${name}`);
@@ -47,7 +50,8 @@ program
 
             const urls = $('.url')
                 .map((index, element) => $(element).text())
-                .get();
+                .get()
+                .map(url => url.startsWith('//') ? `https:${url}` : url);
 
             if (urls.length === 0) {
                 logError(`No files found for library: ${name}`);
@@ -94,46 +98,53 @@ program
                 return 0;
             });
 
-            logInfo(`Preparing to download ${prioritizedUrls.length} file(s)...`);
+            logInfo(`Preparing to download ${prioritizedUrls.length} file(s) into ${libraryBaseDir}...`);
 
             progressBar = new ProgressBar(prioritizedUrls.length);
             progressBarActive = true;
             let progressCounter = 0;
 
-            const cdnModulesDir = 'cdn_modules';
             if (!fs.existsSync(cdnModulesDir)) {
                 fs.mkdirSync(cdnModulesDir);
                 if (options.verbose) logInfo(`Created directory: ${cdnModulesDir}`);
             }
+            fs.mkdirSync(libraryBaseDir, { recursive: true });
+            if (options.verbose) logInfo(`Ensured library directory exists: ${libraryBaseDir}`);
+
 
             const downloadPromises = prioritizedUrls.map(url => {
                 return limit(async () => {
-                    const urlParts = url.split('/');
-                    const fileNameIndex = urlParts.length - 1;
-                    const versionIndex = fileNameIndex - 1;
-                    const libraryNameIndex = versionIndex - 1;
+                    const urlParts = new URL(url).pathname.split('/').filter(Boolean);
 
-                    if (fileNameIndex < 0 || versionIndex < 0 || libraryNameIndex < 3 || urlParts[libraryNameIndex] === 'libs') {
-                        throw new Error(`Could not parse library info from URL: ${url}. Skipping.`);
+                    const libsIndex = urlParts.findIndex(part => part === 'libs');
+                    if (libsIndex === -1 || libsIndex + 2 >= urlParts.length) {
+                        throw new Error(`Could not parse standard cdnjs path structure from URL: ${url}. Skipping.`);
                     }
 
-                    const libraryName = urlParts[libraryNameIndex];
-                    const fileName = urlParts[fileNameIndex];
+                    const libraryNameFromUrl = urlParts[libsIndex + 1];
+                    const versionIndex = libsIndex + 2;
+                    const relativePathParts = urlParts.slice(versionIndex + 1);
+
+                    if (relativePathParts.length === 0) {
+                        throw new Error(`Could not determine relative file path from URL: ${url}. Skipping.`);
+                    }
+
+                    const relativeFilePath = relativePathParts.join(path.sep);
+                    const fileName = path.basename(relativeFilePath);
+
+                    const filePath = path.join(libraryBaseDir, relativeFilePath);
+                    const fileDir = path.dirname(filePath);
 
                     if (options.verbose) {
-                        logInfo(`[${progressCounter + 1}/${prioritizedUrls.length}] Downloading ${fileName}...`);
+                        logInfo(`[${progressCounter + 1}/${prioritizedUrls.length}] Downloading ${fileName} to ${filePath}...`);
                     }
 
-                    let filePath = '';
-
                     try {
+                        await fs.promises.mkdir(fileDir, { recursive: true });
+
                         const linkResponse = await axios.get(url, { responseType: 'arraybuffer', timeout: 45000 });
                         const linkData = linkResponse.data;
 
-                        const libraryDir = path.join(cdnModulesDir, libraryName);
-                        fs.mkdirSync(libraryDir, { recursive: true });
-
-                        filePath = path.join(libraryDir, fileName);
                         await fs.promises.writeFile(filePath, linkData);
 
                         if (options.verbose) {
@@ -142,7 +153,7 @@ program
                         return { status: 'fulfilled', path: filePath, url: url };
 
                     } catch (error) {
-                        let errorMessage = `Failed task for ${fileName} from ${url}`;
+                        let errorMessage = `Failed task for ${fileName} saving to ${filePath} from ${url}`;
                         if (axios.isAxiosError(error)) {
                             errorMessage += `: AxiosError: ${error.code || 'N/A'}`;
                             if (error.response) {
@@ -151,7 +162,11 @@ program
                                 errorMessage += ` - ${error.message}`;
                             }
                         } else if (error instanceof Error) {
-                            errorMessage += `: ${(error as Error).message}`;
+                            if ('code' in error && typeof error.code === 'string') {
+                                errorMessage += `: ${error.code} - ${(error as NodeJS.ErrnoException).message}`;
+                            } else {
+                                errorMessage += `: ${(error as Error).message}`;
+                            }
                         } else {
                             errorMessage += `: Unknown error occurred.`;
                         }
@@ -189,13 +204,16 @@ program
 
             if (downloadedCount > 0) {
                 if (failedCount === 0) {
-                    logSuccess(`Successfully installed all ${downloadedCount} files for library: ${name} in ${durationSeconds}s`);
+                    logSuccess(`Successfully installed all ${downloadedCount} files for library "${name}" into ${libraryBaseDir} in ${durationSeconds}s`);
                 } else {
-                    logWarning(`Successfully installed ${downloadedCount} out of ${prioritizedUrls.length} files for library: ${name} in ${durationSeconds}s. ${failedCount} file(s) failed (check errors above).`);
+                    logWarning(`Successfully installed ${downloadedCount} out of ${prioritizedUrls.length} files for library "${name}" into ${libraryBaseDir} in ${durationSeconds}s. ${failedCount} file(s) failed (check errors above).`);
                 }
             } else if (prioritizedUrls.length > 0) {
                 logError(`No files were successfully downloaded for library: ${name}. Check previous errors. Operation took ${durationSeconds}s`);
+            } else {
+                logWarning(`No files were selected or available for download for library: ${name}. Operation took ${durationSeconds}s`);
             }
+
 
         } catch (error) {
             const commandEndTime = Date.now();
@@ -210,8 +228,14 @@ program
                 logError(`Could not find library "${name}" on cdnjs (404). Failed in ${durationSeconds}s`);
             } else if (error instanceof Error) {
                 logError(`Installation failed: ${error.message}. Operation took ${durationSeconds}s`);
+                if (options.verbose && error.stack) {
+                    console.error(error.stack);
+                }
             } else {
                 logError(`An unexpected error occurred during installation. Operation took ${durationSeconds}s`);
+                if (options.verbose) {
+                    console.error(error);
+                }
             }
         }
     });
