@@ -84,6 +84,15 @@ export function getFileScore(fileName: string, libraryName: string): number {
     return score;
 }
 
+/**
+ * Recursively searches for files in a directory that match a given filter.
+ * 
+ * @param dirPath - The directory path to start searching from
+ * @param baseDir - The base directory used to calculate relative paths
+ * @param fileFilter - Callback function to determine if a file should be included
+ * @param arrayOfFiles - Accumulator array for found file paths (used internally for recursion)
+ * @returns Array of relative file paths (using forward slashes) that match the filter
+ */
 export function findFilesRecursive(
     dirPath: string,
     baseDir: string,
@@ -108,6 +117,17 @@ export function findFilesRecursive(
     return arrayOfFiles;
 }
 
+/**
+ * Downloads a file from a URL with retry logic for transient failures.
+ * 
+ * @param url - The URL to download from
+ * @param filePath - Local path where the file should be saved
+ * @param options - Configuration options including verbose logging
+ * @param maxRetries - Maximum number of retry attempts (default: 2)
+ * @param initialDelay - Initial delay between retries in ms (default: 1500, doubles each retry)
+ * @returns Promise that resolves with download success information
+ * @throws Error when download fails after all retries or for non-retryable errors
+ */
 export async function downloadWithRetry(
     url: string,
     filePath: string,
@@ -146,35 +166,35 @@ export async function downloadWithRetry(
             };
 
             if (isRetryable(error) && attempts <= maxRetries) {
-                 const errorCode = axios.isAxiosError(error) ? error.code : (error as any)?.code || 'UNKNOWN';
+                const errorCode = axios.isAxiosError(error) ? error.code : (error as any)?.code || 'UNKNOWN';
                 if (options.verbose) {
                     logWarning(`[Retry ${attempts}/${maxRetries}] Failed to download ${path.basename(filePath)} (${errorCode}). Retrying in ${delay / 1000}s...`);
                 }
                 await new Promise(resolve => setTimeout(resolve, delay));
                 delay *= 2;
             } else {
-                 let errorMessage = `Failed task for ${path.basename(filePath)} saving to ${filePath} from ${url}`;
-                 if (axios.isAxiosError(error)) {
+                let errorMessage = `Failed task for ${path.basename(filePath)} saving to ${filePath} from ${url}`;
+                if (axios.isAxiosError(error)) {
                     errorMessage += `: AxiosError: ${error.code || 'N/A'}`;
                     if (error.response) {
                         errorMessage += ` - Status: ${error.response.status} ${error.response.statusText}`;
                     } else if (error.request) {
-                         errorMessage += ` - No response received (Code: ${error.code})`;
+                        errorMessage += ` - No response received (Code: ${error.code})`;
                     } else {
                         errorMessage += ` - ${error.message}`;
                     }
-                 } else if (error instanceof Error) {
+                } else if (error instanceof Error) {
                     if ('code' in error && typeof error.code === 'string') {
                         errorMessage += `: ${error.code} - ${(error as NodeJS.ErrnoException).message}`;
                     } else {
                         errorMessage += `: ${(error as Error).message}`;
                     }
-                 } else {
-                     errorMessage += `: Unknown error occurred.`;
-                 }
-                if(attempts > 1) errorMessage += ` (failed after ${attempts - 1} retries)`;
+                } else {
+                    errorMessage += `: Unknown error occurred.`;
+                }
+                if (attempts > 1) errorMessage += ` (failed after ${attempts - 1} retries)`;
 
-                 throw new Error(errorMessage);
+                throw new Error(errorMessage);
             }
         }
     }
