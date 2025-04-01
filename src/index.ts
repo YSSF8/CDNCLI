@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import * as prettier from 'prettier';
 import { logInfo, logSuccess, logWarning, logError, ProgressBar } from './logging';
-import { getInstalledLibraries, getFileScore } from './libraryUtil';
+import { getInstalledLibraries, getFileScore, findFilesRecursive } from './libraryUtil';
 import { highlightHtmlTags } from './highlightCode';
 import { createLimiter } from './limiter';
 
@@ -381,13 +381,15 @@ program
     });
 
 program
-    .command('embed <name>')
-    .description('Generates prioritized script tags for an installed library')
-    .action((name: string) => {
+    .command('embed <name> [subpaths...]')
+    .description('Generates prioritized script/link tags for an installed library (searches recursively)')
+    .action((name: string, subpaths: string[]) => {
+        const cdnModulesDir = 'cdn_modules';
+
         getInstalledLibraries((err, folders) => {
             if (err) {
-                if ((err as any).code === 'ENOENT') {
-                    logError(`Library "${name}" cannot be found because the cdn_modules directory does not exist.`);
+                if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+                    logError(`Cannot check library "${name}" because the ${cdnModulesDir} directory does not exist.`);
                 } else {
                     logError(`Error checking installed libraries: ${err.message}`);
                 }
@@ -395,75 +397,137 @@ program
             }
 
             if (!folders || !folders.includes(name)) {
-                logError(`Library "${name}" is not installed.`);
+                logError(`Library "${name}" base directory not found in ${cdnModulesDir}. Did you install it?`);
                 return;
             }
 
-            const libraryDir = path.join('cdn_modules', name);
-            let files: string[];
-            try {
-                files = fs.readdirSync(libraryDir).filter(file => {
-                    return file.endsWith('.js') || file.endsWith('.css');
+            const libraryBaseDir = path.join(cdnModulesDir, name);
+            const searchPaths: string[] = [];
+            const targetRelativePaths: string[] = [];
+
+            if (!subpaths || subpaths.length === 0 || (subpaths.length === 1 && subpaths[0] === '.')) {
+                searchPaths.push(libraryBaseDir);
+                targetRelativePaths.push('.');
+                logInfo(`Scanning all .js/.css files recursively in ${libraryBaseDir}...`);
+            } else {
+                logInfo(`Scanning for .js/.css files within specified subpaths of ${libraryBaseDir}: ${subpaths.join(', ')}`);
+                subpaths.forEach(sp => {
+                    const fullSubPath = path.join(libraryBaseDir, sp);
+                    searchPaths.push(fullSubPath);
+
+                    let targetRelative = sp.split(path.sep).join('/');
+                    if (targetRelative.endsWith('/')) {
+                        targetRelative = targetRelative.slice(0, -1);
+                    }
+                    targetRelativePaths.push(targetRelative);
                 });
-            } catch (readErr: any) {
-                logError(`Error reading files for library "${name}" in ${libraryDir}: ${readErr.message}`);
-                return;
             }
 
-            if (files.length === 0) {
-                logWarning(`No script/style files (.js, .css) found in library "${name}".`);
-                return;
-            }
+            let allFiles: string[] = [];
+            try {
+                allFiles = findFilesRecursive(
+                    libraryBaseDir,
+                    cdnModulesDir,
+                    (filePath) => filePath.endsWith('.js') || filePath.endsWith('.css')
+                );
 
-            const rankedFiles = files
-                .map(file => ({
-                    file,
-                    score: getFileScore(file, name),
-                }))
-                .sort((a, b) => b.score - a.score);
-
-            console.log(`\nRecommended script/link tags for library "${name}" (prioritized):`);
-            rankedFiles.forEach(({ file }) => {
-                let tag: string;
-                const filePath = `/cdn_modules/${name}/${file}`;
-
-                if (file.endsWith('.css')) {
-                    tag = `<link rel="stylesheet" href="${filePath}">`;
-                } else {
-
-                    tag = `<script src="${filePath}" defer></script>`;
+                if (allFiles.length === 0) {
+                    logWarning(`No .js or .css files found recursively within ${libraryBaseDir}.`);
+                    return;
                 }
 
-                console.log(highlightHtmlTags(tag, ['link', 'script']));
-            });
+                let filteredFiles: string[] = [];
+                if (targetRelativePaths.length === 1 && targetRelativePaths[0] === '.') {
+                    filteredFiles = allFiles;
+                } else {
+                    filteredFiles = allFiles.filter(fileRelPath => {
+                        const pathWithoutLibName = fileRelPath.substring(name.length + 1);
 
-            const Colors = {
-                Reset: "\x1b[0m",
-                Bright: "\x1b[1m",
-                Dim: "\x1b[2m",
-                Underscore: "\x1b[4m",
-                Blink: "\x1b[5m",
-                Reverse: "\x1b[7m",
-                Hidden: "\x1b[8m",
-                FgBlack: "\x1b[30m",
-                FgRed: "\x1b[31m",
-                FgGreen: "\x1b[32m",
-                FgYellow: "\x1b[33m",
-                FgBlue: "\x1b[34m",
-                FgMagenta: "\x1b[35m",
-                FgCyan: "\x1b[36m",
-                FgWhite: "\x1b[37m",
-                BgBlack: "\x1b[40m",
-                BgRed: "\x1b[41m",
-                BgGreen: "\x1b[42m",
-                BgYellow: "\x1b[43m",
-                BgBlue: "\x1b[44m",
-                BgMagenta: "\x1b[45m",
-                BgCyan: "\x1b[46m",
-                BgWhite: "\x1b[47m",
-            };
+                        return targetRelativePaths.some(targetRel => {
+                            const targetFullPath = path.join(libraryBaseDir, targetRel);
+                            const stats = fs.existsSync(targetFullPath) ? fs.statSync(targetFullPath) : null;
 
-            console.log(`\n${Colors.FgYellow}Note:${Colors.Reset} Ensure your server serves the 'cdn_modules' directory correctly.`);
+                            if (stats?.isDirectory()) {
+                                const dirPrefix = targetRel.endsWith('/') ? targetRel : targetRel + '/';
+                                return pathWithoutLibName.startsWith(dirPrefix);
+                            } else if (stats?.isFile()) {
+                                return pathWithoutLibName === targetRel;
+                            } else {
+                                return pathWithoutLibName.startsWith(targetRel);
+                            }
+                        });
+                    });
+
+                    if (filteredFiles.length === 0 && allFiles.length > 0) {
+                        logWarning(`No .js or .css files found matching the specified subpaths: ${subpaths.join(', ')} within ${libraryBaseDir}`);
+                        logInfo(`Found ${allFiles.length} total files in the library.`);
+                        return;
+                    } else if (filteredFiles.length === 0 && allFiles.length === 0) {
+                        return;
+                    }
+                }
+
+
+                if (filteredFiles.length === 0) {
+                    logWarning(`No relevant script/style files (.js, .css) found for library "${name}" with the specified criteria.`);
+                    return;
+                }
+
+                const rankedFiles = filteredFiles
+                    .map(relativeFilePath => ({
+                        file: relativeFilePath,
+                        score: getFileScore(relativeFilePath, name),
+                    }))
+                    .sort((a, b) => b.score - a.score);
+
+                console.log(`\nRecommended script/link tags for library "${name}" (prioritized based on specified paths):`);
+                rankedFiles.forEach(({ file }) => {
+                    let tag: string;
+                    const webPath = `/${file}`;
+
+                    if (file.endsWith('.css')) {
+                        tag = `<link rel="stylesheet" href="${webPath}">`;
+                    } else {
+                        tag = `<script src="${webPath}" defer></script>`;
+                    }
+                    console.log(highlightHtmlTags(tag, ['link', 'script']));
+                });
+
+                const Colors = {
+                    Reset: "\x1b[0m",
+                    Bright: "\x1b[1m",
+                    Dim: "\x1b[2m",
+                    Underscore: "\x1b[4m",
+                    Blink: "\x1b[5m",
+                    Reverse: "\x1b[7m",
+                    Hidden: "\x1b[8m",
+                    FgBlack: "\x1b[30m",
+                    FgRed: "\x1b[31m",
+                    FgGreen: "\x1b[32m",
+                    FgYellow: "\x1b[33m",
+                    FgBlue: "\x1b[34m",
+                    FgMagenta: "\x1b[35m",
+                    FgCyan: "\x1b[36m",
+                    FgWhite: "\x1b[37m",
+                    BgBlack: "\x1b[40m",
+                    BgRed: "\x1b[41m",
+                    BgGreen: "\x1b[42m",
+                    BgYellow: "\x1b[43m",
+                    BgBlue: "\x1b[44m",
+                    BgMagenta: "\x1b[45m",
+                    BgCyan: "\x1b[46m",
+                    BgWhite: "\x1b[47m",
+                };
+
+                console.log(`\n${Colors.FgYellow}Note:${Colors.Reset} Ensure your server serves the '${cdnModulesDir}' directory (or the specific library folder '${name}') correctly.`);
+                console.log(`      Paths shown are relative to the root of where '${cdnModulesDir}' is served.`);
+
+
+            } catch (readErr: any) {
+                logError(`Error processing files for library "${name}": ${readErr.message}`);
+                if (readErr.stack) console.error(readErr.stack);
+                return;
+            }
         });
     });
 
