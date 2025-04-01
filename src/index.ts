@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 import { program } from 'commander';
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 import * as cheerio from 'cheerio';
 import fs from 'fs';
 import path from 'path';
 import * as prettier from 'prettier';
 import { logInfo, logSuccess, logWarning, logError, ProgressBar } from './logging';
-import { getInstalledLibraries, getFileScore, findFilesRecursive } from './libraryUtil';
+import { getInstalledLibraries, getFileScore, findFilesRecursive, downloadWithRetry } from './libraryUtil';
 import { highlightHtmlTags } from './highlightCode';
 import { createLimiter } from './limiter';
 
@@ -22,13 +22,13 @@ program
     .description('Installs a library locally into cdn_modules/<name>')
     .option('--select-only <files>', 'Comma-separated list of specific files to install')
     .option('--verbose', 'Show detailed logging')
-    .option('--concurrency <number>', 'Maximum number of concurrent downloads', (value) => parseInt(value, 10), 10)
+    .option('--concurrency <number>', 'Maximum number of concurrent downloads', (value) => parseInt(value, 10), 5)
     .action(async (name: string, options: { selectOnly?: string; verbose?: boolean; concurrency: number }) => {
         const commandStartTime = Date.now();
         let progressBar: ProgressBar | null = null;
         let progressBarActive = false;
 
-        const concurrency = options.concurrency > 0 ? options.concurrency : 10;
+        const concurrency = options.concurrency > 0 ? options.concurrency : 5;
         if (options.verbose) {
             logInfo(`Using concurrency level: ${concurrency}`);
         }
@@ -45,7 +45,7 @@ program
 
             const encoded = encodeURIComponent(name.toLowerCase());
             logInfo(`Fetching library info for "${name}" from cdnjs...`);
-            const response = await axios.get(`https://cdnjs.com/libraries/${encoded}`, { timeout: 30000 });
+            const response = await axios.get(`https://cdnjs.com/libraries/${encoded}`, { timeout: 45000 });
             const $ = cheerio.load(response.data);
 
             const urls = $('.url')
@@ -111,76 +111,63 @@ program
             fs.mkdirSync(libraryBaseDir, { recursive: true });
             if (options.verbose) logInfo(`Ensured library directory exists: ${libraryBaseDir}`);
 
+            const fileOutcomes: Array<{ status: 'fulfilled' | 'rejected'; url: string; reason?: any }> = [];
 
             const downloadPromises = prioritizedUrls.map(url => {
                 return limit(async () => {
-                    const urlParts = new URL(url).pathname.split('/').filter(Boolean);
-
-                    const libsIndex = urlParts.findIndex(part => part === 'libs');
-                    if (libsIndex === -1 || libsIndex + 2 >= urlParts.length) {
-                        throw new Error(`Could not parse standard cdnjs path structure from URL: ${url}. Skipping.`);
-                    }
-
-                    const libraryNameFromUrl = urlParts[libsIndex + 1];
-                    const versionIndex = libsIndex + 2;
-                    const relativePathParts = urlParts.slice(versionIndex + 1);
-
-                    if (relativePathParts.length === 0) {
-                        throw new Error(`Could not determine relative file path from URL: ${url}. Skipping.`);
-                    }
-
-                    const relativeFilePath = relativePathParts.join(path.sep);
-                    const fileName = path.basename(relativeFilePath);
-
-                    const filePath = path.join(libraryBaseDir, relativeFilePath);
-                    const fileDir = path.dirname(filePath);
-
-                    if (options.verbose) {
-                        logInfo(`[${progressCounter + 1}/${prioritizedUrls.length}] Downloading ${fileName} to ${filePath}...`);
-                    }
+                    let result: { status: 'fulfilled'; path: string; url: string } | null = null;
+                    let finalError: Error | null = null;
 
                     try {
+                        const urlParts = new URL(url).pathname.split('/').filter(Boolean);
+                        const libsIndex = urlParts.findIndex(part => part === 'libs');
+                        if (libsIndex === -1 || libsIndex + 2 >= urlParts.length) {
+                            throw new Error(`Could not parse standard cdnjs path structure from URL: ${url}. Skipping.`);
+                        }
+
+                        const relativePathParts = urlParts.slice(libsIndex + 3);
+                        if (relativePathParts.length === 0) {
+                            const fileNameFromUrl = urlParts[urlParts.length - 1];
+                            if (!fileNameFromUrl || !fileNameFromUrl.includes('.')) {
+                                throw new Error(`Could not determine relative file path from URL: ${url}. Skipping.`);
+                            }
+                            relativePathParts.push(fileNameFromUrl);
+                            logWarning(`Could not determine version/path structure reliably for ${url}, saving as ${fileNameFromUrl}`);
+                        }
+
+                        const relativeFilePath = relativePathParts.join(path.sep);
+                        const fileName = path.basename(relativeFilePath);
+                        const filePath = path.join(libraryBaseDir, relativeFilePath);
+                        const fileDir = path.dirname(filePath);
+
+                        if (options.verbose) {
+                            logInfo(`[${progressCounter + 1}/${prioritizedUrls.length}] Queueing ${fileName} for download to ${filePath}...`);
+                        }
+
                         await fs.promises.mkdir(fileDir, { recursive: true });
 
-                        const linkResponse = await axios.get(url, { responseType: 'arraybuffer', timeout: 45000 });
-                        const linkData = linkResponse.data;
-
-                        await fs.promises.writeFile(filePath, linkData);
+                        result = await downloadWithRetry(url, filePath, { verbose: options.verbose });
 
                         if (options.verbose) {
                             logSuccess(`[${progressCounter + 1}/${prioritizedUrls.length}] Saved: ${filePath}`);
                         }
-                        return { status: 'fulfilled', path: filePath, url: url };
+                        fileOutcomes.push({ status: 'fulfilled', url: url });
 
                     } catch (error) {
-                        let errorMessage = `Failed task for ${fileName} saving to ${filePath} from ${url}`;
-                        if (axios.isAxiosError(error)) {
-                            errorMessage += `: AxiosError: ${error.code || 'N/A'}`;
-                            if (error.response) {
-                                errorMessage += ` - Status: ${error.response.status} ${error.response.statusText}`;
-                            } else {
-                                errorMessage += ` - ${error.message}`;
-                            }
-                        } else if (error instanceof Error) {
-                            if ('code' in error && typeof error.code === 'string') {
-                                errorMessage += `: ${error.code} - ${(error as NodeJS.ErrnoException).message}`;
-                            } else {
-                                errorMessage += `: ${(error as Error).message}`;
-                            }
-                        } else {
-                            errorMessage += `: Unknown error occurred.`;
-                        }
+                        finalError = error instanceof Error ? error : new Error(String(error));
+                        fileOutcomes.push({ status: 'rejected', url: url, reason: finalError });
+                        throw finalError;
 
-                        throw new Error(errorMessage);
                     } finally {
                         if (progressBar) {
                             progressBar.update(++progressCounter);
                         }
                     }
+                    return result;
                 });
             });
 
-            const results = await Promise.allSettled(downloadPromises);
+            const settledResults = await Promise.allSettled(downloadPromises);
 
             if (progressBar) {
                 progressBar.complete();
@@ -193,14 +180,16 @@ program
             let downloadedCount = 0;
             let failedCount = 0;
 
-            results.forEach((result, index) => {
+            settledResults.forEach((result, index) => {
+                const url = prioritizedUrls[index];
                 if (result.status === 'fulfilled') {
                     downloadedCount++;
                 } else {
                     failedCount++;
-                    logError(`Failed [${prioritizedUrls[index]}]: ${result.reason.message}`);
+                    logError(`Failed [${url}]: ${result.reason?.message || 'Unknown error during download task'}`);
                 }
             });
+
 
             if (downloadedCount > 0) {
                 if (failedCount === 0) {
@@ -213,7 +202,6 @@ program
             } else {
                 logWarning(`No files were selected or available for download for library: ${name}. Operation took ${durationSeconds}s`);
             }
-
 
         } catch (error) {
             const commandEndTime = Date.now();
@@ -237,6 +225,7 @@ program
                     console.error(error);
                 }
             }
+            process.exitCode = 1;
         }
     });
 
