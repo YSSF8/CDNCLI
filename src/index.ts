@@ -46,7 +46,7 @@ program
             const encoded = encodeURIComponent(name.toLowerCase());
             const libraryInfoUrl = `https://cdnjs.com/libraries/${encoded}`;
 
-            logInfo(`Fetching library info for "${name}" from ${libraryInfoUrl}...`);
+            logInfo(`Fetching library info for "${name}"...`);
 
             let response;
             try {
@@ -137,8 +137,14 @@ program
 
             logInfo(`Preparing to download ${prioritizedUrls.length} file(s) into ${libraryBaseDir}...`);
 
-            progressBar = new ProgressBar(prioritizedUrls.length);
-            progressBarActive = true;
+            if (!options.verbose) {
+                progressBar = new ProgressBar(prioritizedUrls.length);
+                progressBarActive = true;
+            } else {
+                progressBar = null;
+                progressBarActive = false;
+            }
+
             let progressCounter = 0;
 
             if (!fs.existsSync(cdnModulesDir)) {
@@ -205,8 +211,9 @@ program
                         throw finalError;
 
                     } finally {
+                        progressCounter++;
                         if (progressBar) {
-                            progressBar.update(++progressCounter);
+                            progressBar.update(progressCounter);
                         }
                     }
                     return result;
