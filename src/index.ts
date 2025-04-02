@@ -601,34 +601,39 @@ program
 
 program
     .command('insert <library-name>')
-    .argument('[filename]', 'Optional specific file to insert (e.g., jquery.min.js)')
+    .argument('[filename]', 'Optional specific file path relative to the library root (e.g., "dist/jquery.min.js" or "addon/edit/closebrackets.js")')
     .argument('<html-file>', 'HTML file to modify')
     .argument('<location>', 'Location in HTML (head or body)')
     .description('Inserts a script/link tag for a library file into an HTML file')
     .action(async (libraryName: string, filename: string | undefined, htmlFile: string, location: string) => {
+        const commandStartTime = Date.now();
         try {
             const targetLocation = location.toLowerCase();
             if (targetLocation !== 'head' && targetLocation !== 'body') {
                 logError(`Invalid location "${location}". Must be 'head' or 'body'.`);
+                process.exitCode = 1;
                 return;
             }
 
             if (!fs.existsSync(htmlFile)) {
                 logError(`HTML file not found: ${htmlFile}`);
+                process.exitCode = 1;
                 return;
             }
             try {
                 fs.accessSync(htmlFile, fs.constants.R_OK | fs.constants.W_OK);
             } catch (accessErr) {
                 logError(`Cannot read/write HTML file: ${htmlFile}. Check permissions.`);
+                process.exitCode = 1;
                 return;
             }
 
             const cdnModulesDir = 'cdn_modules';
-            const libraryDir = path.join(cdnModulesDir, libraryName);
+            const baseLibraryDir = path.join(cdnModulesDir, libraryName);
             let actualLibraryName = libraryName;
+            let actualLibraryDir = baseLibraryDir;
 
-            if (!fs.existsSync(libraryDir) || !fs.statSync(libraryDir).isDirectory()) {
+            if (!fs.existsSync(baseLibraryDir) || !fs.statSync(baseLibraryDir).isDirectory()) {
                 let found = false;
                 if (fs.existsSync(cdnModulesDir)) {
                     const dirs = fs.readdirSync(cdnModulesDir, { withFileTypes: true })
@@ -637,98 +642,119 @@ program
                     const match = dirs.find(dir => dir.toLowerCase() === libraryName.toLowerCase());
                     if (match) {
                         actualLibraryName = match;
+                        actualLibraryDir = path.join(cdnModulesDir, actualLibraryName);
                         found = true;
+                        logInfo(`Found matching library directory (case-insensitive): ${actualLibraryName}`);
                     }
                 }
                 if (!found) {
                     logError(`Library "${libraryName}" is not installed (directory not found in ${cdnModulesDir}).`);
+                    process.exitCode = 1;
                     return;
                 }
             }
-            const actualLibraryDir = path.join(cdnModulesDir, actualLibraryName);
 
-            let fileToInsert: string | null = null;
-            let filesInLib: string[];
+            let fileToInsertRelativePath: string | null = null;
+            let allPotentialFiles: string[] = [];
+
             try {
-                filesInLib = fs.readdirSync(actualLibraryDir).filter(file =>
-                    (file.endsWith('.js') || file.endsWith('.css')) && !file.endsWith('.map')
-                );
+                allPotentialFiles = findFilesRecursive(
+                    actualLibraryDir,
+                    cdnModulesDir,
+                    (filePath) => (filePath.endsWith('.js') || filePath.endsWith('.css')) && !filePath.endsWith('.map')
+                ).map(fullRelPath => {
+                    return fullRelPath.startsWith(actualLibraryName + path.sep)
+                        ? fullRelPath.substring(actualLibraryName.length + path.sep.length)
+                        : fullRelPath;
+                });
+
             } catch (readErr) {
-                logError(`Error reading library directory ${actualLibraryDir}: ${(readErr as Error).message}`);
+                logError(`Error scanning library directory ${actualLibraryDir}: ${(readErr as Error).message}`);
+                process.exitCode = 1;
                 return;
             }
 
-            if (filesInLib.length === 0) {
-                logError(`No suitable .js or .css files found in ${actualLibraryDir}.`);
+            if (allPotentialFiles.length === 0) {
+                logError(`No suitable .js or .css files found recursively within ${actualLibraryDir}.`);
+                process.exitCode = 1;
                 return;
             }
 
             if (filename) {
-                const foundFile = filesInLib.find(f => f.toLowerCase() === filename.toLowerCase());
-                if (!foundFile) {
-                    logError(`Specified file "${filename}" not found in ${actualLibraryDir}.`);
-                    logInfo(`Available files: ${filesInLib.join(', ')}`);
+                const normalizedFilename = filename.replace(/\\/g, '/');
+                const targetFullPath = path.join(actualLibraryDir, normalizedFilename);
+
+                if (fs.existsSync(targetFullPath) && fs.statSync(targetFullPath).isFile()) {
+                    const foundInScan = allPotentialFiles.some(p => path.join(actualLibraryDir, p) === targetFullPath);
+                    if (foundInScan) {
+                        fileToInsertRelativePath = normalizedFilename;
+                        logInfo(`Using specified file: ${fileToInsertRelativePath}`);
+                    } else {
+                        logError(`Specified path "${filename}" exists but is not a recognized JS/CSS file (or is a .map file).`);
+                        logInfo(`Available files:\n - ${allPotentialFiles.join('\n - ')}`);
+                        process.exitCode = 1;
+                        return;
+                    }
+                } else {
+                    logError(`Specified file "${filename}" not found within ${actualLibraryDir}.`);
+                    logInfo(`Available files:\n - ${allPotentialFiles.join('\n - ')}`);
+                    process.exitCode = 1;
                     return;
                 }
-                fileToInsert = foundFile;
-                logInfo(`Using specified file: ${fileToInsert}`);
             } else {
-                const rankedFiles = filesInLib
-                    .map(file => ({
-                        file,
-                        score: getFileScore(file, actualLibraryName),
+                const rankedFiles = allPotentialFiles
+                    .map(relativeFilePath => ({
+                        file: relativeFilePath,
+                        score: getFileScore(relativeFilePath, actualLibraryName),
                     }))
                     .sort((a, b) => b.score - a.score);
 
                 if (rankedFiles.length > 0) {
-                    fileToInsert = rankedFiles[0].file;
-                    logInfo(`No specific file requested, selecting best match: ${fileToInsert}`);
+                    fileToInsertRelativePath = rankedFiles[0].file;
+                    logInfo(`No specific file requested, selecting best match recursively: ${fileToInsertRelativePath}`);
                 } else {
                     logError(`Could not determine a best file to insert in ${actualLibraryDir}.`);
+                    process.exitCode = 1;
                     return;
                 }
             }
 
-            if (!fileToInsert) {
-                logError("Failed to determine file for insertion.");
+            if (!fileToInsertRelativePath) {
+                logError("Internal error: Failed to determine file for insertion.");
+                process.exitCode = 1;
                 return;
             }
 
             let tagToInsert: string;
-            const filePath = `/cdn_modules/${actualLibraryName}/${fileToInsert}`;
-            const fileExt = path.extname(fileToInsert).toLowerCase();
+            const webPath = `/cdn_modules/${actualLibraryName}/${fileToInsertRelativePath.replace(/\\/g, '/')}`;
+            const fileExt = path.extname(fileToInsertRelativePath).toLowerCase();
 
             if (fileExt === '.css') {
-                tagToInsert = `<link rel="stylesheet" href="${filePath}">`;
+                tagToInsert = `<link rel="stylesheet" href="${webPath}">`;
             } else if (fileExt === '.js') {
-                tagToInsert = `<script src="${filePath}" defer></script>`;
+                tagToInsert = `<script src="${webPath}" defer></script>`;
             } else {
-                logError(`Unsupported file type for insertion: ${fileToInsert}`);
+                logError(`Unsupported file type for insertion: ${fileToInsertRelativePath}`);
+                process.exitCode = 1;
                 return;
             }
 
             logInfo(`Reading HTML file: ${htmlFile}`);
             const htmlContent = fs.readFileSync(htmlFile, 'utf-8');
-            const $ = cheerio.load(htmlContent, {
-                // Try to preserve some whitespace characteristics if possible with cheerio options
-                // Note: Cheerio is not a full layout engine, perfect preservation isn't guaranteed.
-                // decodeEntities: false // Might help sometimes? Often not needed.
-            });
+            const $ = cheerio.load(htmlContent, {});
 
             const targetElement = $(targetLocation);
             if (targetElement.length === 0) {
                 logError(`Could not find <${targetLocation}> tag in ${htmlFile}. Ensure it's valid HTML.`);
+                process.exitCode = 1;
                 return;
             }
 
             let tagExists = false;
-            const selector = fileExt === '.css' ? `link[href="${filePath}"]` : `script[src="${filePath}"]`;
-            if ($(targetLocation).find(selector).length > 0) {
-                tagExists = true;
-            }
+            const selector = fileExt === '.css' ? `link[href="${webPath}"]` : `script[src="${webPath}"]`;
 
-            if (tagExists) {
-                logWarning(`Tag for "${filePath}" already exists in <${targetLocation}> of ${htmlFile}. No changes made.`);
+            if ($(selector).length > 0) {
+                logWarning(`Tag for "${webPath}" already exists in ${htmlFile}. No changes made.`);
                 return;
             }
 
@@ -749,21 +775,30 @@ program
             } catch (formatError) {
                 logWarning(`Could not format HTML output using prettier: ${(formatError as Error).message}`);
                 logWarning('Writing unformatted HTML instead.');
+                if (!finalHtmlOutput.endsWith('\n')) {
+                    finalHtmlOutput += '\n';
+                }
             }
-
 
             logInfo(`Writing changes back to ${htmlFile}`);
             fs.writeFileSync(htmlFile, finalHtmlOutput, 'utf-8');
 
-            logSuccess(`Successfully inserted tag for ${fileToInsert} into ${htmlFile}`);
+            logSuccess(`Successfully inserted tag for ${fileToInsertRelativePath} into ${htmlFile}`);
             console.log(highlightHtmlTags(`Inserted: ${tagToInsert}`, ['link', 'script']));
+
+            const commandEndTime = Date.now();
+            const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
+            logInfo(`Insert operation completed in ${durationSeconds}s`);
 
 
         } catch (error: any) {
-            logError(`Failed to insert tag: ${error.message}`);
+            const commandEndTime = Date.now();
+            const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
+            logError(`Failed to insert tag: ${error.message}. Operation took ${durationSeconds}s`);
             if (error.stack) {
                 console.error(error.stack);
             }
+            process.exitCode = 1;
         }
     });
 
