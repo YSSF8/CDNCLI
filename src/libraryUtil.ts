@@ -119,7 +119,8 @@ export function findFilesRecursive(
 }
 
 const downloadAgent = new https.Agent({
-    keepAlive: false
+    keepAlive: true,
+    keepAliveMsecs: 5000
 });
 
 /**
