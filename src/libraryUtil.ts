@@ -3,6 +3,7 @@ import _fs from 'fs';
 import path from 'path';
 import { logWarning } from './logging';
 import axios, { AxiosError } from 'axios';
+import https from 'https';
 
 /**
  * Scans the `cdn_modules` directory asynchronously and retrieves a list of installed libraries (directories).
@@ -117,6 +118,10 @@ export function findFilesRecursive(
     return arrayOfFiles;
 }
 
+const downloadAgent = new https.Agent({
+    keepAlive: false
+});
+
 /**
  * Downloads a file from a URL with retry logic for transient failures.
  * 
@@ -143,6 +148,7 @@ export async function downloadWithRetry(
             const linkResponse = await axios.get(url, {
                 responseType: 'arraybuffer',
                 timeout: 60000,
+                httpsAgent: downloadAgent,
             });
             const linkData = linkResponse.data;
             await fs.writeFile(filePath, linkData);
@@ -174,7 +180,7 @@ export async function downloadWithRetry(
                 delay *= 2;
             } else {
                 let errorMessage = `Failed task for ${path.basename(filePath)} saving to ${filePath} from ${url}`;
-                if (axios.isAxiosError(error)) {
+                 if (axios.isAxiosError(error)) {
                     errorMessage += `: AxiosError: ${error.code || 'N/A'}`;
                     if (error.response) {
                         errorMessage += ` - Status: ${error.response.status} ${error.response.statusText}`;
@@ -185,10 +191,10 @@ export async function downloadWithRetry(
                     }
                 } else if (error instanceof Error) {
                     if ('code' in error && typeof error.code === 'string') {
-                        errorMessage += `: ${error.code} - ${(error as NodeJS.ErrnoException).message}`;
-                    } else {
-                        errorMessage += `: ${(error as Error).message}`;
-                    }
+                        errorMessage += `: ${(error as NodeJS.ErrnoException).code} - ${error.message}`;
+                     } else {
+                        errorMessage += `: ${error.message}`;
+                     }
                 } else {
                     errorMessage += `: Unknown error occurred.`;
                 }

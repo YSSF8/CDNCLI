@@ -44,8 +44,45 @@ program
             }
 
             const encoded = encodeURIComponent(name.toLowerCase());
-            logInfo(`Fetching library info for "${name}" from cdnjs...`);
-            const response = await axios.get(`https://cdnjs.com/libraries/${encoded}`, { timeout: 45000 });
+            const libraryInfoUrl = `https://cdnjs.com/libraries/${encoded}`;
+
+            logInfo(`Fetching library info for "${name}" from ${libraryInfoUrl}...`);
+
+            let response;
+            try {
+                const fetchStartTime = Date.now();
+                if (options.verbose) logInfo(`  - Attempting GET request to ${libraryInfoUrl} with timeout 45000ms...`);
+
+                response = await axios.get(libraryInfoUrl, {
+                    timeout: 45000,
+                });
+
+                const fetchEndTime = Date.now();
+                if (options.verbose) logInfo(`  - Successfully fetched library info page. Status: ${response.status}. Duration: ${fetchEndTime - fetchStartTime}ms`);
+
+            } catch (fetchError) {
+                const fetchEndTime = Date.now();
+                let detailedErrorMessage = `Failed during initial library info fetch from ${libraryInfoUrl}`;
+                if (axios.isAxiosError(fetchError)) {
+                    detailedErrorMessage += `: AxiosError: ${fetchError.code || 'N/A'}`;
+                    if (fetchError.response) {
+                        detailedErrorMessage += ` - Status: ${fetchError.response.status}`;
+                    } else if (fetchError.request) {
+                        detailedErrorMessage += ` - No response received`;
+                    }
+                    if (fetchError.message) {
+                        detailedErrorMessage += ` (${fetchError.message})`;
+                    }
+                } else if (fetchError instanceof Error) {
+                    detailedErrorMessage += `: ${fetchError.message}`;
+                } else {
+                    detailedErrorMessage += `: Unknown error object type.`;
+                }
+                detailedErrorMessage += ` (Attempt duration: ${fetchEndTime - commandStartTime}ms)`;
+                throw new Error(detailedErrorMessage);
+            }
+
+
             const $ = cheerio.load(response.data);
 
             const urls = $('.url')
@@ -117,6 +154,7 @@ program
                 return limit(async () => {
                     let result: { status: 'fulfilled'; path: string; url: string } | null = null;
                     let finalError: Error | null = null;
+                    let filePath: string | null = null;
 
                     try {
                         const urlParts = new URL(url).pathname.split('/').filter(Boolean);
@@ -131,20 +169,26 @@ program
                             if (!fileNameFromUrl || !fileNameFromUrl.includes('.')) {
                                 throw new Error(`Could not determine relative file path from URL: ${url}. Skipping.`);
                             }
-                            relativePathParts.push(fileNameFromUrl);
                             logWarning(`Could not determine version/path structure reliably for ${url}, saving as ${fileNameFromUrl}`);
+                            relativePathParts.push(fileNameFromUrl);
                         }
 
                         const relativeFilePath = relativePathParts.join(path.sep);
                         const fileName = path.basename(relativeFilePath);
-                        const filePath = path.join(libraryBaseDir, relativeFilePath);
+                        filePath = path.join(libraryBaseDir, relativeFilePath);
                         const fileDir = path.dirname(filePath);
 
                         if (options.verbose) {
-                            logInfo(`[${progressCounter + 1}/${prioritizedUrls.length}] Queueing ${fileName} for download to ${filePath}...`);
+                            logInfo(`[${progressCounter + 1}/${prioritizedUrls.length}] Preparing to download:`);
+                            logInfo(`  - URL: ${url}`);
+                            logInfo(`  - Target Path: ${filePath}`);
                         }
 
                         await fs.promises.mkdir(fileDir, { recursive: true });
+
+                        if (options.verbose) {
+                            logInfo(`  - Attempting download now...`);
+                        }
 
                         result = await downloadWithRetry(url, filePath, { verbose: options.verbose });
 
@@ -155,6 +199,8 @@ program
 
                     } catch (error) {
                         finalError = error instanceof Error ? error : new Error(String(error));
+                        const targetPathInfo = filePath ? ` (intended target: ${filePath})` : '';
+                        logError(`Download failed for URL: ${url}${targetPathInfo}`);
                         fileOutcomes.push({ status: 'rejected', url: url, reason: finalError });
                         throw finalError;
 
@@ -186,7 +232,8 @@ program
                     downloadedCount++;
                 } else {
                     failedCount++;
-                    logError(`Failed [${url}]: ${result.reason?.message || 'Unknown error during download task'}`);
+                    const reasonMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+                    logError(`Failed Download Task [URL: ${url}]: ${reasonMsg || 'Unknown error during download task'}`);
                 }
             });
 
@@ -212,19 +259,44 @@ program
                 progressBarActive = false;
             }
 
-            if (axios.isAxiosError(error) && error.response?.status === 404) {
-                logError(`Could not find library "${name}" on cdnjs (404). Failed in ${durationSeconds}s`);
-            } else if (error instanceof Error) {
-                logError(`Installation failed: ${error.message}. Operation took ${durationSeconds}s`);
-                if (options.verbose && error.stack) {
-                    console.error(error.stack);
+            let errorMessage = "An unknown issue occurred";
+
+            if (axios.isAxiosError(error)) {
+                if (error.response?.status === 404) {
+                    errorMessage = `Could not find library "${name}" on cdnjs (404)`;
+                } else {
+                    errorMessage = `Axios Error: ${error.code || 'N/A'}`;
+                    if (error.response) {
+                        errorMessage += ` - Status: ${error.response.status}`;
+                    } else if (error.request) {
+                        errorMessage += ` - No response received`;
+                    }
+                    if (error.message && errorMessage !== error.message) {
+                        errorMessage += ` (${error.message})`;
+                    }
                 }
+            } else if (error instanceof Error) {
+                errorMessage = error.message ? error.message : "Caught Error object without a message";
             } else {
-                logError(`An unexpected error occurred during installation. Operation took ${durationSeconds}s`);
-                if (options.verbose) {
-                    console.error(error);
+                try {
+                    errorMessage = `Caught non-Error value: ${String(error)}`;
+                } catch (stringifyError) {
+                    errorMessage = "Caught a non-standard error that could not be stringified.";
                 }
             }
+
+            logError(`Installation failed: ${errorMessage}. Operation took ${durationSeconds}s`);
+
+            if (options.verbose) {
+                console.error("\n--- Verbose Error Details ---");
+                console.error("Error Type:", typeof error);
+                console.error("Raw Error Object:", error);
+                if (error instanceof Error && error.stack) {
+                    console.error("Stack Trace:\n", error.stack);
+                }
+                console.error("---------------------------\n");
+            }
+
             process.exitCode = 1;
         }
     });
