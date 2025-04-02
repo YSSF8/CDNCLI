@@ -1,158 +1,137 @@
 # CDNCLI
+*A Command-Line Tool for Managing CDN Libraries*
 
-CDNCLI is a command-line interface (CLI) tool for managing libraries from CDNs. It allows you to install, uninstall, list, and generate script tags for libraries fetched from [cdnjs](https://cdnjs.com).
+![Demo](https://img.shields.io/badge/status-active-brightgreen)
+![Version](https://img.shields.io/badge/version-1.3.1-blue)
 
-## Features
+CDNCLI lets you **install, uninstall, and generate script tags** for libraries from [cdnjs](https://cdnjs.com) with ease. It’s perfect for local development, prototyping, or managing frontend dependencies without npm.
 
-- **Install Libraries**: Download specific libraries and their files from cdnjs.
-- **Uninstall Libraries**: Remove installed libraries from your local `cdn_modules` directory.
-- **List Installed Libraries**: View all libraries currently installed.
-- **Generate Script Tags**: Create prioritized `<script>` or `<link>` tags for installed libraries.
+---
 
-## Installation
+## ✨ Features
+✅ **Install Libraries** – Download libraries (or specific files) into `cdn_modules/`.
+✅ **Uninstall Libraries** – Remove one, multiple, or all installed libraries.
+✅ **List Installed Libraries** – See what’s in your `cdn_modules/`.
+✅ **Generate Embed Tags** – Get prioritized `<script>` or `<link>` tags for local use.
+✅ **Insert into HTML** – Automatically inject tags into your HTML files.
+✅ **Concurrent Downloads** – Speed up installs with configurable concurrency.
+✅ **Retry Logic** – Auto-retries failed downloads with exponential backoff.
+✅ **Verbose Logging** – Debug with detailed output.
+✅ **Syntax Highlighting** – Colorized HTML tags for readability.
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/YSSF8/CDNCLI.git
-   cd CDNCLI
-   ```
+---
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Build the project (if needed):
-   ```bash
-   npx tsc
-   ```
-
-4. Link the CLI globally:
-   ```bash
-   npm link
-   ```
-
-## Usage
-
-Once installed, you can use the `cdn` command to interact with the CLI.
-
-### Commands
-
-#### Install a Library
-Installs a library locally in the `cdn_modules` directory.
-
+## 🚀 Installation
 ```bash
-cdn install|i <library-name> [options]
+git clone https://github.com/YSSF8/CDNCLI.git
+cd CDNCLI
+npm install
+npm link  # Optional: Install globally
 ```
 
-**Options**:
-- `--select-only <files>`: Comma-separated list of specific files to install.
-- `--verbose`: Show detailed logging during the installation process.
+---
 
-**Example**:
+## 📖 Usage
+
+### 1. Install a Library
+Download a library (with optional file filtering):
 ```bash
-cdn install jquery --select-only jquery.min.js --verbose
+cdn install jquery
+cdn install lodash --select-only lodash.min.js,lodash.core.js
+cdn install react --concurrency 10 --verbose
 ```
+**Options:**
+- `--select-only` – Only download specific files (comma-separated).
+- `--concurrency` – Max parallel downloads (default: `5`).
+- `--verbose` – Show detailed logs.
 
-#### Uninstall a Library
-Uninstalls a specific library or all libraries.
+---
 
-```bash
-cdn uninstall|un <library-name>
-```
-
-**Example**:
+### 2. Uninstall Libraries
+Remove one or more libraries:
 ```bash
 cdn uninstall jquery
+cdn uninstall lodash react
 ```
-
-To uninstall all libraries:
+**Uninstall ALL libraries:**
 ```bash
 cdn uninstall /
 ```
 
-#### List Installed Libraries
-Lists all libraries installed in the `cdn_modules` directory.
+---
 
+### 3. List Installed Libraries
 ```bash
 cdn list
 ```
 
-#### Generate Script Tags
-Generates prioritized `<script>` or `<link>` tags for an installed library.
+---
 
-```bash
-cdn embed <library-name>
-```
-
-**Example**:
+### 4. Generate Embed Tags
+Get optimized `<script>` or `<link>` tags for local use:
 ```bash
 cdn embed jquery
+cdn embed bootstrap dist/css/bootstrap.min.css
 ```
 
-#### Insert Script/Link Tags
-Inserts a script or link tag for an installed library into an HTML file.
+---
 
+### 5. Insert Tags into HTML
+Automatically inject a library’s script/link into your HTML file:
 ```bash
-cdn insert <library-name> [filename] <html-file> <location>
+cdn insert jquery index.html head
+cdn insert bootstrap bootstrap.min.css index.html head
+```
+**Arguments:**
+- `<library-name>` – Name of the installed library.
+- `[filename]` – Optional specific file (e.g., `jquery.min.js`).
+- `<html-file>` – Path to your HTML file.
+- `<location>` – Where to insert (`head` or `body`).
+
+---
+
+## 📂 Directory Structure
+```
+cdn_modules/       # Installed libraries go here
+├── jquery/
+├── lodash/
+└── ...
 ```
 
-**Arguments**:
-- `library-name`: Name of the installed library
-- `filename`: Specific file to insert (e.g., jquery.min.js)
-- `html-file`: Path to the HTML file to modify
-- `location`: Where to insert the tag (`head` or `body`)
+---
 
-**Example**:
+## 🔧 Advanced Options
+- **Concurrency Control** – Speed up downloads with `--concurrency`.
+  ```bash
+  cdn install fontawesome --concurrency 8
+  ```
+- **Retry Logic** – Failed downloads automatically retry (with delays).
+- **Prettier Integration** – Formatted HTML output when inserting tags.
+
+---
+
+## 💡 Example Workflow
 ```bash
-cdn insert jquery jquery.js index.html head
+# 1. Install jQuery
+cdn install jquery
+
+# 2. Generate script tags
+cdn embed jquery
+
+# 3. Insert into HTML
+cdn insert jquery index.html head
+
+# 4. Uninstall when done
+cdn uninstall jquery
 ```
 
-## Directory Structure
+---
 
-- `cdn_modules/`: Directory where libraries are installed.
-- `src/`: Source code for the CLI.
-  - `index.ts`: Main entry point for the CLI.
-  - `logging.ts`: Utility functions for logging and progress bars.
-  - `libraryUtil.ts`: Functions for managing installed libraries.
-  - `highlightCode.ts`: Syntax highlighting for generated script tags.
+## 📜 License
+MIT © [YSSF](https://github.com/YSSF8)
 
-## Development
+---
 
-### Prerequisites
-- Node.js (v16 or higher)
-- TypeScript
-
-### Build the Project
-Compile the TypeScript files into JavaScript:
-
-```bash
-npx tsc
-```
-
-### Run Locally
-Run the CLI locally without linking:
-
-```bash
-node dist/index.js <command>
-```
-
-### Testing
-You can add unit tests for the utility functions and commands. Use a testing framework like Jest or Mocha.
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-## Author
-
-Created by **YSSF**.
-
-## Contributing
-
-Contributions are welcome! Feel free to open issues or submit pull requests.
-
-## Notes
-
-- Ensure your server serves the `cdn_modules` directory correctly when using the generated script tags.
-- This tool relies on the structure of cdnjs. If their API or website changes, updates to this tool may be required.
+### 🔗 Notes
+- Ensure your server serves the `cdn_modules` directory.
+- Uses **cdnjs** – if their API changes, updates may be needed.
