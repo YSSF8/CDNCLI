@@ -1,1 +1,5 @@
+* linguist-detectable=false
+
+src/**/*.ts linguist-detectable=true
+src/**/*.tsx linguist-detectable=true
 dist/** linguist-generated=true
