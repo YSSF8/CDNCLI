@@ -11,10 +11,14 @@ import { getInstalledLibraries, getFileScore, findFilesRecursive, downloadWithRe
 import { highlightHtmlTags } from './highlightCode';
 import { createLimiter } from './limiter';
 
+const packageJsonPath = path.join(__dirname, '..', 'package.json');
+const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+const version = packageJson.version;
+
 program
     .name('cdn')
     .description('Fetches data from CDN to install libraries')
-    .version('1.0.0');
+    .version(version);
 
 program
     .command('install <name>')
