@@ -42,7 +42,7 @@ function isTTY(stream: Writable): boolean {
  * @returns A formatted duration string.
  */
 function formatDuration(totalSeconds: number): string {
-    if (totalSeconds < 0 || !isFinite(totalSeconds)) {
+    if (totalSeconds < 0 || !isFinite(totalSeconds) || isNaN(totalSeconds)) {
         return '--s';
     }
     const seconds = Math.floor(totalSeconds % 60);
@@ -51,7 +51,7 @@ function formatDuration(totalSeconds: number): string {
     if (minutes > 0) {
         return `${minutes}m ${seconds}s`;
     } else {
-        return `${seconds}s`;
+        return `${totalSeconds.toFixed(1)}s`;
     }
 }
 
@@ -104,6 +104,7 @@ export function logWarning(message: string): void {
 export class ProgressBar {
     private total: number;
     private current: number;
+    private totalBytesDownloaded: number;
     private barLength: number;
     private isComplete: boolean;
     private stream: Writable;
@@ -113,6 +114,7 @@ export class ProgressBar {
     constructor(total: number, barLength: number = 40, stream: Writable = process.stdout) {
         this.total = total;
         this.current = 0;
+        this.totalBytesDownloaded = 0;
         this.barLength = barLength;
         this.isComplete = false;
         this.stream = stream;
@@ -122,18 +124,22 @@ export class ProgressBar {
 
     /**
      * Updates the progress bar.
-     * @param value - The current progress value.
+     * @param value - The current progress value (number of items completed).
+     * @param totalBytesDownloaded - The cumulative total bytes downloaded so far.
      */
-    update(value: number): void {
+    update(value: number, totalBytesDownloaded?: number): void {
         if (this.isComplete) return;
 
         this.current = Math.min(Math.max(0, value), this.total);
+        if (totalBytesDownloaded !== undefined) {
+            this.totalBytesDownloaded = totalBytesDownloaded;
+        }
 
         this.draw();
 
         if (this.current >= this.total) {
             // Don't call complete automatically here, let the caller decide
-            // when the *overall* process is done. Draw the 100% state though.
+            // when the overall process is done. Draw the 100% state though.
         }
     }
 
@@ -151,20 +157,33 @@ export class ProgressBar {
         const emptyBar = "░".repeat(emptyBarLength);
         const percentage = Math.round(progress * 100);
 
-        let etaString = 'ETA: --s';
         const elapsedMs = Date.now() - this.startTime;
-        if (this.current > 0 && elapsedMs > 500 && this.current < this.total) {
-            const msPerItem = elapsedMs / this.current;
+        const elapsedSeconds = elapsedMs / 1000;
+
+        let etaString = 'ETA: --s';
+        if (this.current > 0 && elapsedSeconds > 0.5 && this.current < this.total) {
+            const secondsPerItem = elapsedSeconds / this.current;
             const remainingItems = this.total - this.current;
-            const etaMs = msPerItem * remainingItems;
-            etaString = `ETA: ${formatDuration(etaMs / 1000)}`;
-        } else if (this.current === 0 && elapsedMs > 500) {
+            const etaSeconds = secondsPerItem * remainingItems;
+            etaString = `ETA: ${formatDuration(etaSeconds)}`;
+        } else if (this.current === 0 && elapsedSeconds > 0.5) {
             etaString = 'ETA: ...';
         } else if (this.current >= this.total) {
-            etaString = `Done ${formatDuration(elapsedMs / 1000)}`;
+            etaString = `Done ${formatDuration(elapsedSeconds)}`;
         }
 
-        const output = `${Colors.FgCyan}[${filledBar}${emptyBar}] ${percentage}% (${this.current}/${this.total}) ${etaString}${Colors.Reset}`;
+        let speedString = '-- KB/s';
+        if (elapsedSeconds > 0.1 && this.totalBytesDownloaded > 0) {
+            const bytesPerSecond = this.totalBytesDownloaded / elapsedSeconds;
+            const kbPerSecond = bytesPerSecond / 1024;
+            speedString = `${kbPerSecond.toFixed(1)} KB/s`;
+        } else if (this.current >= this.total && this.totalBytesDownloaded > 0) {
+            const bytesPerSecond = this.totalBytesDownloaded / elapsedSeconds;
+            const kbPerSecond = bytesPerSecond / 1024;
+            speedString = `Avg: ${kbPerSecond.toFixed(1)} KB/s`;
+        }
+
+        const output = `${Colors.FgCyan}[${filledBar}${emptyBar}] ${percentage}% (${this.current}/${this.total}) ${speedString} ${etaString}${Colors.Reset}`;
 
         clearLine(this.stream);
         this.stream.write(output + '\r');

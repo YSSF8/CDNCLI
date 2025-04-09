@@ -32,7 +32,7 @@ program
         let progressBar: ProgressBar | null = null;
         let progressBarActive = false;
 
-        const concurrency = options.concurrency > 0 ? options.concurrency : 5;
+        const concurrency = options.concurrency > 0 ? options.concurrency : 15;
         if (options.verbose) {
             logInfo(`Using concurrency level: ${concurrency}`);
         }
@@ -88,19 +88,19 @@ program
 
 
             const $ = cheerio.load(response.data);
-
             const urls = $('.url')
                 .map((index, element) => $(element).text())
                 .get()
-                .map(url => url.startsWith('//') ? `https:${url}` : url);
+                .map(url => url.startsWith('//') ? `https:${url}` : url)
+                .filter(url => !url.endsWith('.html'));
 
             if (urls.length === 0) {
-                logError(`No files found for library: ${name}`);
+                logError(`No actual asset files (JS/CSS etc.) found for library: ${name}`);
                 return;
             }
 
             if (options.verbose) {
-                logInfo(`Found ${urls.length} total files for the library.`);
+                logInfo(`Found ${urls.length} potential asset file(s) for the library.`);
             }
 
             const selectedFiles = options.selectOnly
@@ -150,6 +150,7 @@ program
             }
 
             let progressCounter = 0;
+            let totalBytesDownloaded = 0;
 
             if (!fs.existsSync(cdnModulesDir)) {
                 fs.mkdirSync(cdnModulesDir);
@@ -162,9 +163,10 @@ program
 
             const downloadPromises = prioritizedUrls.map(url => {
                 return limit(async () => {
-                    let result: { status: 'fulfilled'; path: string; url: string } | null = null;
+                    let result: { status: 'fulfilled'; path: string; url: string; size: number } | null = null;
                     let finalError: Error | null = null;
                     let filePath: string | null = null;
+                    let downloadedSize = 0;
 
                     try {
                         const urlParts = new URL(url).pathname.split('/').filter(Boolean);
@@ -179,9 +181,10 @@ program
                             if (!fileNameFromUrl || !fileNameFromUrl.includes('.')) {
                                 throw new Error(`Could not determine relative file path from URL: ${url}. Skipping.`);
                             }
-                            logWarning(`Could not determine version/path structure reliably for ${url}, saving as ${fileNameFromUrl}`);
+                            logWarning(`Could not determine version/path structure reliably for ${url}, saving directly under library base`);
                             relativePathParts.push(fileNameFromUrl);
                         }
+
 
                         const relativeFilePath = relativePathParts.join(path.sep);
                         const fileName = path.basename(relativeFilePath);
@@ -200,29 +203,36 @@ program
                             logInfo(`  - Attempting download now...`);
                         }
 
-                        result = await downloadWithRetry(url, filePath, { verbose: options.verbose });
+                        const downloadResult = await downloadWithRetry(url, filePath, { verbose: options.verbose });
+                        downloadedSize = downloadResult.size;
+                        result = { ...downloadResult, status: 'fulfilled' };
 
                         if (options.verbose) {
-                            logSuccess(`[${progressCounter + 1}/${prioritizedUrls.length}] Saved: ${filePath}`);
+                            logSuccess(`[${progressCounter + 1}/${prioritizedUrls.length}] Saved: ${filePath} (${(downloadedSize / 1024).toFixed(1)} KB)`);
                         }
                         fileOutcomes.push({ status: 'fulfilled', url: url });
 
                     } catch (error) {
                         finalError = error instanceof Error ? error : new Error(String(error));
                         const targetPathInfo = filePath ? ` (intended target: ${filePath})` : '';
-                        logError(`Download failed for URL: ${url}${targetPathInfo}`);
+                        logError(`Download failed for URL: ${url}${targetPathInfo}: ${finalError.message}`);
                         fileOutcomes.push({ status: 'rejected', url: url, reason: finalError });
-                        throw finalError;
 
                     } finally {
                         progressCounter++;
+                        totalBytesDownloaded += downloadedSize;
                         if (progressBar) {
-                            progressBar.update(progressCounter);
+                            progressBar.update(progressCounter, totalBytesDownloaded);
                         }
                     }
-                    return result;
+
+                    if (finalError) {
+                        throw finalError;
+                    }
+                    return result!;
                 });
             });
+
 
             const settledResults = await Promise.allSettled(downloadPromises);
 
@@ -239,21 +249,27 @@ program
 
             settledResults.forEach((result, index) => {
                 const url = prioritizedUrls[index];
-                if (result.status === 'fulfilled') {
+                if (result.status === 'fulfilled' && result.value?.status === 'fulfilled') {
                     downloadedCount++;
                 } else {
                     failedCount++;
-                    const reasonMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
-                    logError(`Failed Download Task [URL: ${url}]: ${reasonMsg || 'Unknown error during download task'}`);
+                    if (!options.verbose && result.status === 'rejected') {
+                        const reasonMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+                        logError(`Failed Task Summary [URL: ${url}]: ${reasonMsg || 'Unknown error during download task'}`);
+                    }
                 }
             });
 
 
             if (downloadedCount > 0) {
+                const totalSizeKB = (totalBytesDownloaded / 1024).toFixed(1);
+                const totalSizeMB = (totalBytesDownloaded / 1024 / 1024).toFixed(2);
+                const sizeString = totalBytesDownloaded > 1024 * 500 ? `${totalSizeMB} MB` : `${totalSizeKB} KB`;
+
                 if (failedCount === 0) {
-                    logSuccess(`Successfully installed all ${downloadedCount} files for library "${name}" into ${libraryBaseDir} in ${durationSeconds}s`);
+                    logSuccess(`Successfully installed all ${downloadedCount} files (${sizeString}) for library "${name}" into ${libraryBaseDir} in ${durationSeconds}s`);
                 } else {
-                    logWarning(`Successfully installed ${downloadedCount} out of ${prioritizedUrls.length} files for library "${name}" into ${libraryBaseDir} in ${durationSeconds}s. ${failedCount} file(s) failed (check errors above).`);
+                    logWarning(`Successfully installed ${downloadedCount} out of ${prioritizedUrls.length} files (${sizeString}) for library "${name}" into ${libraryBaseDir} in ${durationSeconds}s. ${failedCount} file(s) failed (check errors above).`);
                 }
             } else if (prioritizedUrls.length > 0) {
                 logError(`No files were successfully downloaded for library: ${name}. Check previous errors. Operation took ${durationSeconds}s`);
@@ -311,6 +327,7 @@ program
             process.exitCode = 1;
         }
     });
+
 
 program
     .command('uninstall [names...]')
@@ -434,7 +451,7 @@ program
     .action(() => {
         getInstalledLibraries((err, folders) => {
             if (err) {
-                if ((err as any).code === 'ENOENT') {
+                if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
                     logInfo('No libraries installed (cdn_modules directory not found).');
                 } else {
                     logError(`Error reading library directory: ${err.message}`);
@@ -444,8 +461,8 @@ program
 
             if (folders && folders.length > 0) {
                 logSuccess('Installed libraries:');
-
-                folders.sort().forEach(folder => console.log(`- ${folder}`));
+                folders.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+                folders.forEach(folder => console.log(`- ${folder}`));
             } else {
                 logInfo('No libraries found in the cdn_modules directory.');
             }
@@ -468,12 +485,17 @@ program
                 return;
             }
 
-            if (!folders || !folders.includes(name)) {
+            const actualName = folders?.find(folder => folder.toLowerCase() === name.toLowerCase());
+
+            if (!actualName) {
                 logError(`Library "${name}" base directory not found in ${cdnModulesDir}. Did you install it?`);
                 return;
             }
+            if (actualName !== name) {
+                logInfo(`Using installed library directory: "${actualName}" (matched case-insensitively)`);
+            }
 
-            const libraryBaseDir = path.join(cdnModulesDir, name);
+            const libraryBaseDir = path.join(cdnModulesDir, actualName);
             const searchPaths: string[] = [];
             const targetRelativePaths: string[] = [];
 
@@ -486,7 +508,6 @@ program
                 subpaths.forEach(sp => {
                     const fullSubPath = path.join(libraryBaseDir, sp);
                     searchPaths.push(fullSubPath);
-
                     let targetRelative = sp.split(path.sep).join('/');
                     if (targetRelative.endsWith('/')) {
                         targetRelative = targetRelative.slice(0, -1);
@@ -510,10 +531,16 @@ program
 
                 let filteredFiles: string[] = [];
                 if (targetRelativePaths.length === 1 && targetRelativePaths[0] === '.') {
-                    filteredFiles = allFiles;
+                    filteredFiles = allFiles.filter(fileRelPath => fileRelPath.startsWith(actualName + '/'));
                 } else {
                     filteredFiles = allFiles.filter(fileRelPath => {
-                        const pathWithoutLibName = fileRelPath.substring(name.length + 1);
+                        const normalizedFileRelPath = fileRelPath.split(path.sep).join('/');
+
+                        if (!normalizedFileRelPath.startsWith(actualName + '/')) {
+                            return false;
+                        }
+
+                        const pathWithinLib = normalizedFileRelPath.substring(actualName.length + 1);
 
                         return targetRelativePaths.some(targetRel => {
                             const targetFullPath = path.join(libraryBaseDir, targetRel);
@@ -521,18 +548,18 @@ program
 
                             if (stats?.isDirectory()) {
                                 const dirPrefix = targetRel.endsWith('/') ? targetRel : targetRel + '/';
-                                return pathWithoutLibName.startsWith(dirPrefix);
+                                return pathWithinLib.startsWith(dirPrefix);
                             } else if (stats?.isFile()) {
-                                return pathWithoutLibName === targetRel;
+                                return pathWithinLib === targetRel;
                             } else {
-                                return pathWithoutLibName.startsWith(targetRel);
+                                logWarning(`Subpath target "${targetRel}" does not exist or is not a file/directory. Falling back to prefix match.`);
+                                return pathWithinLib.startsWith(targetRel);
                             }
                         });
                     });
 
                     if (filteredFiles.length === 0 && allFiles.length > 0) {
                         logWarning(`No .js or .css files found matching the specified subpaths: ${subpaths.join(', ')} within ${libraryBaseDir}`);
-                        logInfo(`Found ${allFiles.length} total files in the library.`);
                         return;
                     } else if (filteredFiles.length === 0 && allFiles.length === 0) {
                         return;
@@ -541,18 +568,18 @@ program
 
 
                 if (filteredFiles.length === 0) {
-                    logWarning(`No relevant script/style files (.js, .css) found for library "${name}" with the specified criteria.`);
+                    logWarning(`No relevant script/style files (.js, .css) found for library "${actualName}" with the specified criteria.`);
                     return;
                 }
 
                 const rankedFiles = filteredFiles
                     .map(relativeFilePath => ({
                         file: relativeFilePath,
-                        score: getFileScore(relativeFilePath, name),
+                        score: getFileScore(relativeFilePath, actualName),
                     }))
                     .sort((a, b) => b.score - a.score);
 
-                console.log(`\nRecommended script/link tags for library "${name}" (prioritized based on specified paths):`);
+                console.log(`\nRecommended script/link tags for library "${actualName}" (prioritized based on specified paths):`);
                 rankedFiles.forEach(({ file }) => {
                     let tag: string;
                     const webPath = `/${file}`;
@@ -565,39 +592,20 @@ program
                     console.log(highlightHtmlTags(tag, ['link', 'script']));
                 });
 
-                const Colors = {
+                const ColorsEmbed = {
                     Reset: "\x1b[0m",
-                    Bright: "\x1b[1m",
-                    Dim: "\x1b[2m",
-                    Underscore: "\x1b[4m",
-                    Blink: "\x1b[5m",
-                    Reverse: "\x1b[7m",
-                    Hidden: "\x1b[8m",
-                    FgBlack: "\x1b[30m",
-                    FgRed: "\x1b[31m",
-                    FgGreen: "\x1b[32m",
                     FgYellow: "\x1b[33m",
-                    FgBlue: "\x1b[34m",
-                    FgMagenta: "\x1b[35m",
-                    FgCyan: "\x1b[36m",
-                    FgWhite: "\x1b[37m",
-                    BgBlack: "\x1b[40m",
-                    BgRed: "\x1b[41m",
-                    BgGreen: "\x1b[42m",
-                    BgYellow: "\x1b[43m",
-                    BgBlue: "\x1b[44m",
-                    BgMagenta: "\x1b[45m",
-                    BgCyan: "\x1b[46m",
-                    BgWhite: "\x1b[47m",
                 };
 
-                console.log(`\n${Colors.FgYellow}Note:${Colors.Reset} Ensure your server serves the '${cdnModulesDir}' directory (or the specific library folder '${name}') correctly.`);
-                console.log(`      Paths shown are relative to the root of where '${cdnModulesDir}' is served.`);
+                console.log(`\n${ColorsEmbed.FgYellow}Note:${ColorsEmbed.Reset} Ensure your server serves the '${cdnModulesDir}' directory correctly.`);
+                console.log(`      Paths shown are relative to the root where '${cdnModulesDir}' is served.`);
 
 
             } catch (readErr: any) {
-                logError(`Error processing files for library "${name}": ${readErr.message}`);
-                if (readErr.stack) console.error(readErr.stack);
+                logError(`Error processing files for library "${actualName}": ${readErr.message}`);
+                if (readErr.stack && process.env.NODE_ENV !== 'production') {
+                    console.error(readErr.stack);
+                }
                 return;
             }
         });
@@ -648,7 +656,7 @@ program
                         actualLibraryName = match;
                         actualLibraryDir = path.join(cdnModulesDir, actualLibraryName);
                         found = true;
-                        logInfo(`Found matching library directory (case-insensitive): ${actualLibraryName}`);
+                        logInfo(`Using installed library directory: "${actualLibraryName}" (matched case-insensitively)`);
                     }
                 }
                 if (!found) {
@@ -664,13 +672,9 @@ program
             try {
                 allPotentialFiles = findFilesRecursive(
                     actualLibraryDir,
-                    cdnModulesDir,
+                    actualLibraryDir,
                     (filePath) => (filePath.endsWith('.js') || filePath.endsWith('.css')) && !filePath.endsWith('.map')
-                ).map(fullRelPath => {
-                    return fullRelPath.startsWith(actualLibraryName + path.sep)
-                        ? fullRelPath.substring(actualLibraryName.length + path.sep.length)
-                        : fullRelPath;
-                });
+                );
 
             } catch (readErr) {
                 logError(`Error scanning library directory ${actualLibraryDir}: ${(readErr as Error).message}`);
@@ -689,7 +693,7 @@ program
                 const targetFullPath = path.join(actualLibraryDir, normalizedFilename);
 
                 if (fs.existsSync(targetFullPath) && fs.statSync(targetFullPath).isFile()) {
-                    const foundInScan = allPotentialFiles.some(p => path.join(actualLibraryDir, p) === targetFullPath);
+                    const foundInScan = allPotentialFiles.some(p => p === normalizedFilename);
                     if (foundInScan) {
                         fileToInsertRelativePath = normalizedFilename;
                         logInfo(`Using specified file: ${fileToInsertRelativePath}`);
@@ -701,7 +705,7 @@ program
                     }
                 } else {
                     logError(`Specified file "${filename}" not found within ${actualLibraryDir}.`);
-                    logInfo(`Available files:\n - ${allPotentialFiles.join('\n - ')}`);
+                    logInfo(`Available files (relative to ${actualLibraryName}):\n - ${allPotentialFiles.join('\n - ')}`);
                     process.exitCode = 1;
                     return;
                 }
@@ -745,7 +749,9 @@ program
 
             logInfo(`Reading HTML file: ${htmlFile}`);
             const htmlContent = fs.readFileSync(htmlFile, 'utf-8');
-            const $ = cheerio.load(htmlContent, {});
+            const $ = cheerio.load(htmlContent, {
+                xmlMode: false
+            });
 
             const targetElement = $(targetLocation);
             if (targetElement.length === 0) {
@@ -754,9 +760,7 @@ program
                 return;
             }
 
-            let tagExists = false;
             const selector = fileExt === '.css' ? `link[href="${webPath}"]` : `script[src="${webPath}"]`;
-
             if ($(selector).length > 0) {
                 logWarning(`Tag for "${webPath}" already exists in ${htmlFile}. No changes made.`);
                 return;
@@ -769,16 +773,17 @@ program
             let finalHtmlOutput = rawHtmlOutput;
 
             try {
-                logInfo('Formatting HTML output...');
+                logInfo('Formatting HTML output using Prettier...');
                 finalHtmlOutput = await prettier.format(rawHtmlOutput, {
                     parser: 'html',
+                    endOfLine: 'lf',
                 });
                 if (!finalHtmlOutput.endsWith('\n')) {
                     finalHtmlOutput += '\n';
                 }
             } catch (formatError) {
                 logWarning(`Could not format HTML output using prettier: ${(formatError as Error).message}`);
-                logWarning('Writing unformatted HTML instead.');
+                logWarning('Writing potentially unformatted HTML instead.');
                 if (!finalHtmlOutput.endsWith('\n')) {
                     finalHtmlOutput += '\n';
                 }
@@ -799,7 +804,7 @@ program
             const commandEndTime = Date.now();
             const durationSeconds = ((commandEndTime - commandStartTime) / 1000).toFixed(1);
             logError(`Failed to insert tag: ${error.message}. Operation took ${durationSeconds}s`);
-            if (error.stack) {
+            if (error.stack && process.env.NODE_ENV !== 'production') {
                 console.error(error.stack);
             }
             process.exitCode = 1;
